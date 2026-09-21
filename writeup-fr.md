@@ -42,7 +42,9 @@ flowchart TB
         AUTH -->|non| LOG1["journalisation<br/>table <code>failed_logins</code>"]
         AUTH -->|oui| POOL["<b>Gestionnaire de VM</b><br/>1 microVM par empreinte d'attaquant"]
 
-        POOL --> OVL["overlay qcow2<br/><code>attacker-N.qcow2</code>"]
+        POOL --> SOVL["overlay de session<br/><code>session-XXXX.qcow2</code><br/><i>éphémère</i>"]
+        SOVL -.->|backing file| OVL["overlay attaquant<br/><code>attacker-N.qcow2</code><br/><i>persistant</i>"]
+        SOVL -->|"fusion à la<br/>fermeture propre"| OVL
         OVL -.->|backing file<br/>lecture seule| BASE[("rootfs de base<br/>honeypot.ext4 — 512 Mo")]
 
         POOL --> QEMU
@@ -89,7 +91,7 @@ Les logs du serveur sont assez parlants :
 
 Une fois l'authentification réussie, le serveur instancie une VM. Pas un conteneur — une vraie VM matérielle avec KVM, parce que je ne voulais pas dépendre de l'isolation du kernel hôte face à un attaquant root.
 
-C'est du `qemu-system-x86_64` avec le type de machine **`microvm`** : pas de BIOS, pas d'ACPI, pas de PCI, juste un bus MMIO minimal. Ça démarre en quelques dizaines de millisecondes et l'empreinte mémoire est ridicule. La VM reçoit :
+C'est du `qemu-system-x86_64` avec le type de machine **`microvm`** : pas de BIOS, pas d'ACPI, pas de PCI, juste un bus MMIO minimal. Le shell est servi à l'attaquant en 39 ms médians (voir plus bas), et l'empreinte mémoire est ridicule. La VM reçoit :
 
 | Composant | Choix | Pourquoi |
 |---|---|---|
@@ -106,18 +108,45 @@ C'est du `qemu-system-x86_64` avec le type de machine **`microvm`** : pas de BIO
 
 Le coût de ce choix, c'est que je vois les *URLs* que les attaquants tentent de contacter, mais je ne récupère pas les binaires. C'est un arbitrage assumé : je préfère une chaîne dont je peux garantir l'innocuité plutôt que des échantillons de malware et une nuit d'insomnie.
 
+### Pourquoi une microVM : le temps de démarrage
+
+Le choix du type de machine `microvm` n'est pas une coquetterie : c'est la contrainte qui rend tout le reste possible.
+
+Un honeypot qui donne un vrai shell dans une vraie VM doit démarrer cette VM **pendant la poignée de main SSH**, entre le moment où l'attaquant est authentifié et le moment où il doit voir son invite de commande. Si ce délai est perceptible, le piège se trahit : personne n'attend trois secondes après un `ssh root@…` réussi. Le budget disponible est donc celui de la latence réseau — quelques dizaines de millisecondes.
+
+Le serveur journalise deux mesures distinctes à chaque session. Sur l'ensemble de la période :
+
+| Mesure | n | min | médiane | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| QEMU prêt (`VM ready in`) | 1 043 | 50 ms | **51 ms** | 101 ms | 103 ms | 202 ms |
+| Première sortie du shell (`VM first output after`) | 12 821 | 3 ms | **39 ms** | 61 ms | 140 ms | 391 ms |
+
+La seconde ligne est celle qui compte, parce que c'est celle que l'attaquant perçoit : **le temps médian entre l'authentification et le premier octet de l'invite est de 39 ms**, et 90 % des sessions sont servies en moins de 61 ms.
+
+> [!NOTE]
+> Un mot sur la première ligne : les valeurs se concentrent sur 50/51 ms et 101/102 ms, ce qui trahit une boucle d'attente à pas de 50 ms côté superviseur. Ce chiffre est donc un **majorant quantifié**, pas une mesure fine du démarrage de QEMU. La métrique « première sortie », elle, est mesurée en continu et n'a pas cet artefact — c'est celle qu'il faut retenir.
+
+Pour situer l'ordre de grandeur : **39 ms, c'est moins qu'un aller-retour réseau depuis l'Asie ou l'Amérique du Sud**, d'où vient la majorité du trafic observé. La VM finit de démarrer pendant que les paquets sont encore sur le câble. Du point de vue de l'attaquant, il n'y a pas de démarrage du tout — le shell est simplement là.
+
+C'est ce que permet le type de machine `microvm` de QEMU : pas de BIOS à exécuter, pas d'énumération ACPI, pas de bus PCI à sonder, juste un bus MMIO minimal et trois périphériques virtio. Un démarrage de VM classique (SeaBIOS + ACPI + PCI) se compte en secondes, soit deux ordres de grandeur au-dessus, et aurait rendu le piège inutilisable.
+
 ### La persistance par attaquant
 
-Chaque attaquant est identifié par une empreinte (IP + version du client SSH + username). À la première connexion réussie, un overlay qcow2 est créé au-dessus de l'image de base, en lecture seule :
+Chaque attaquant est identifié par une empreinte (IP + version du client SSH + username). Le stockage est une **chaîne qcow2 à trois niveaux**, et c'est le second pilier de la rapidité de démarrage :
 
 ```
-honeypot.ext4 (512 Mo, backing file partagé, immuable)
-   └── attacker-1.qcow2     ← modifications de l'attaquant 1
-   └── attacker-102.qcow2   ← modifications de l'attaquant 102
-   └── ...                     762 overlays, 875 Mo au total
+honeypot.ext4                    ← rootfs de base, 512 Mo, partagé, immuable
+   └── attacker-N.qcow2          ← état persistant de l'attaquant N (698 fichiers)
+         └── session-XXXX.qcow2  ← écritures de la session en cours, éphémère
 ```
 
-Quand le même attaquant revient, il retrouve **sa** machine avec ses modifications. Ses crontabs, ses fichiers dans `/tmp`, sa clé SSH ajoutée à `authorized_keys`. C'est ce qui rend le piège crédible dans la durée, et c'est ce qui permet d'observer les campagnes qui reviennent sur plusieurs mois.
+La VM n'écrit jamais dans un gros fichier : elle écrit dans un overlay de session vide, créé à la volée. À la fermeture propre de la session, cet overlay est fusionné dans l'overlay de l'attaquant — c'est le `vm[…] exited and committed` des logs, observé 975 fois sur 1 043 démarrages de VM.
+
+Ce troisième niveau a deux vertus. D'abord la **rapidité** : créer un qcow2 vide est instantané, quelle que soit la taille de l'image en dessous. Ensuite la **sûreté** : si la VM plante, est tuée, ou fait quelque chose de destructeur, l'état persistant de l'attaquant n'est jamais corrompu — on jette simplement l'overlay de session. Les 64 overlays `session-*.qcow2` encore présents sur disque sont précisément ces sessions qui ne se sont pas terminées proprement.
+
+Quand le même attaquant revient, il retrouve **sa** machine avec ses modifications. Ses crontabs, ses fichiers dans `/tmp`, sa clé SSH ajoutée à `authorized_keys`. C'est ce qui rend le piège crédible dans la durée, et ce qui permet d'observer les campagnes qui reviennent sur plusieurs mois — comme l'opérateur `kswpad`, revenu sur sa propre VM pendant quatre mois.
+
+Les VM inactives sont récupérées après un délai d'inactivité (907 événements `idle for` dans les logs), ce qui borne la consommation mémoire de l'hôte : seules quelques VM tournent réellement à un instant donné.
 
 698 VM ont été créées pour 6 677 attaquants : l'immense majorité ne dépasse jamais l'écran de login.
 
@@ -837,6 +866,8 @@ Trois hôtes français distribuent la famille `kswpad`. C'est un rappel utile : 
 **Sur la construction d'un honeypot.**
 
 L'architecture microVM coûte plus cher qu'un shell émulé, en développement comme en ressources. Mais elle passe les tests de détection des attaquants — `ls -lh $(which ls)` en est la preuve — et elle permet de dormir tranquille, parce que l'absence de réseau dans la VM n'est pas une règle de filtrage qu'on peut contourner, c'est une absence de matériel.
+
+La contrainte qui décide de tout, c'est le temps de démarrage. Un shell servi en 39 ms médians est indiscernable d'un serveur réel ; le même shell servi en deux secondes trahit le piège avant la première commande. C'est ce qui impose le type de machine `microvm` plutôt qu'une VM classique, et la chaîne qcow2 à trois niveaux plutôt qu'une copie d'image. Tout le reste de l'architecture découle de ce budget de quelques dizaines de millisecondes.
 
 Et la persistance par attaquant, via les overlays qcow2, est ce qui donne à ces données leur profondeur : pouvoir observer le même opérateur `kswpad` revenir sur *sa* machine pendant quatre mois, c'est une information qu'un honeypot sans état ne produira jamais.
 

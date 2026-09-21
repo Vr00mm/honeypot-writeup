@@ -42,7 +42,9 @@ flowchart TB
         AUTH -->|no| LOG1["logged to<br/><code>failed_logins</code>"]
         AUTH -->|yes| POOL["<b>VM manager</b><br/>one microVM per attacker fingerprint"]
 
-        POOL --> OVL["qcow2 overlay<br/><code>attacker-N.qcow2</code>"]
+        POOL --> SOVL["session overlay<br/><code>session-XXXX.qcow2</code><br/><i>ephemeral</i>"]
+        SOVL -.->|backing file| OVL["attacker overlay<br/><code>attacker-N.qcow2</code><br/><i>persistent</i>"]
+        SOVL -->|"merged on<br/>clean exit"| OVL
         OVL -.->|read-only<br/>backing file| BASE[("base rootfs<br/>honeypot.ext4 — 512 MB")]
 
         POOL --> QEMU
@@ -89,7 +91,7 @@ The server logs are fairly eloquent:
 
 Once authentication succeeds, the server spins up a VM. Not a container — a real hardware VM with KVM, because I did not want to rely on host kernel isolation against an attacker who is root.
 
-It is `qemu-system-x86_64` with the **`microvm`** machine type: no BIOS, no ACPI, no PCI, just a minimal MMIO bus. It boots in tens of milliseconds and the memory footprint is negligible. The VM gets:
+It is `qemu-system-x86_64` with the **`microvm`** machine type: no BIOS, no ACPI, no PCI, just a minimal MMIO bus. The shell reaches the attacker in a median of 39 ms (see below), and the memory footprint is negligible. The VM gets:
 
 | Component | Choice | Why |
 |---|---|---|
@@ -106,18 +108,45 @@ It is `qemu-system-x86_64` with the **`microvm`** machine type: no BIOS, no ACPI
 
 The cost of that choice is that I see the *URLs* attackers try to reach, but I do not collect the binaries. It is a deliberate trade-off: I would rather have a chain whose harmlessness I can guarantee than a malware sample collection and a sleepless night.
 
+### Why a microVM: boot time
+
+The `microvm` machine type is not a stylistic choice: it is the constraint that makes everything else possible.
+
+A honeypot that hands out a real shell in a real VM has to boot that VM **during the SSH handshake**, between the moment the attacker is authenticated and the moment they need to see a prompt. If that delay is perceptible, the trap gives itself away: nobody waits three seconds after a successful `ssh root@…`. The available budget is therefore network latency — a few tens of milliseconds.
+
+The server logs two distinct measurements for every session. Across the whole period:
+
+| Measurement | n | min | median | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| QEMU ready (`VM ready in`) | 1,043 | 50 ms | **51 ms** | 101 ms | 103 ms | 202 ms |
+| First shell output (`VM first output after`) | 12,821 | 3 ms | **39 ms** | 61 ms | 140 ms | 391 ms |
+
+The second row is the one that matters, because it is the one the attacker perceives: **the median time from authentication to the first byte of the prompt is 39 ms**, and 90% of sessions are served in under 61 ms.
+
+> [!NOTE]
+> A note on the first row: the values cluster on 50/51 ms and 101/102 ms, which betrays a 50 ms polling loop on the supervisor side. That figure is therefore a **quantized upper bound**, not a fine-grained measurement of QEMU's startup. The "first output" metric is measured continuously and has no such artifact — that is the one to trust.
+
+For scale: **39 ms is less than a network round trip from Asia or South America**, where most of the observed traffic originates. The VM finishes booting while the packets are still on the wire. From the attacker's point of view there is no boot at all — the shell is simply there.
+
+This is what QEMU's `microvm` machine type buys you: no BIOS to execute, no ACPI enumeration, no PCI bus to probe, just a minimal MMIO bus and three virtio devices. A conventional VM boot (SeaBIOS + ACPI + PCI) is measured in seconds — two orders of magnitude higher, which would have made the trap unusable.
+
 ### Per-attacker persistence
 
-Each attacker is identified by a fingerprint (IP + SSH client version + username). On the first successful connection, a qcow2 overlay is created on top of the read-only base image:
+Each attacker is identified by a fingerprint (IP + SSH client version + username). Storage is a **three-level qcow2 chain**, and it is the second pillar of the fast boot:
 
 ```
-honeypot.ext4 (512 MB, shared backing file, immutable)
-   └── attacker-1.qcow2     ← attacker 1's changes
-   └── attacker-102.qcow2   ← attacker 102's changes
-   └── ...                     762 overlays, 875 MB total
+honeypot.ext4                    ← base rootfs, 512 MB, shared, immutable
+   └── attacker-N.qcow2          ← attacker N's persistent state (698 files)
+         └── session-XXXX.qcow2  ← current session's writes, ephemeral
 ```
 
-When the same attacker returns, they find **their** machine with their modifications intact. Their crontabs, their files in `/tmp`, the SSH key they added to `authorized_keys`. That is what makes the trap credible over time, and what makes it possible to observe campaigns returning over several months.
+The VM never writes into a large file: it writes into an empty session overlay created on the fly. When the session closes cleanly, that overlay is merged into the attacker's overlay — the `vm[…] exited and committed` line in the logs, seen 975 times across 1,043 VM starts.
+
+That third level has two virtues. First, **speed**: creating an empty qcow2 is instantaneous regardless of the size of the image beneath it. Second, **safety**: if the VM crashes, is killed, or does something destructive, the attacker's persistent state is never corrupted — the session overlay is simply discarded. The 64 `session-*.qcow2` overlays still on disk are exactly those sessions that did not end cleanly.
+
+When the same attacker returns, they find **their** machine with their modifications intact. Their crontabs, their files in `/tmp`, the SSH key they added to `authorized_keys`. That is what makes the trap credible over time, and what makes it possible to observe campaigns returning over months — like the `kswpad` operator, who came back to their own VM for four months.
+
+Idle VMs are reaped after an inactivity timeout (907 `idle for` events in the logs), which bounds the host's memory usage: only a handful of VMs are actually running at any given moment.
 
 698 VMs were created for 6,677 attackers: the overwhelming majority never get past the login screen.
 
@@ -837,6 +866,8 @@ Three French hosts distribute the `kswpad` family. A useful reminder: malicious 
 **On building a honeypot.**
 
 The microVM architecture costs more than an emulated shell, both in development and in resources. But it passes the attackers' own detection checks — `ls -lh $(which ls)` is the proof — and it lets you sleep at night, because the absence of a network in the VM is not a filtering rule that can be bypassed, it is the absence of hardware.
+
+The constraint that drives everything is boot time. A shell served in a median of 39 ms is indistinguishable from a real server; the same shell served in two seconds gives the trap away before the first command. That is what forces the `microvm` machine type rather than a conventional VM, and the three-level qcow2 chain rather than an image copy. Every other architectural decision follows from that budget of a few tens of milliseconds.
 
 And per-attacker persistence via qcow2 overlays is what gives this data its depth: being able to watch the same `kswpad` operator return to *their* machine over four months is something a stateless honeypot will never produce.
 

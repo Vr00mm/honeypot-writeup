@@ -19,6 +19,7 @@
 - [Identified campaigns](#identified-campaigns)
 - [Payloads and their URLs](#payloads-and-their-urls)
 - [Takeaways](#takeaways)
+- [Blind spots](#blind-spots)
 
 ---
 
@@ -132,7 +133,7 @@ This is what QEMU's `microvm` machine type buys you: no BIOS to execute, no ACPI
 
 ### Per-attacker persistence
 
-Each attacker is identified by a fingerprint (IP + SSH client version + username). Storage is a **three-level qcow2 chain**, and it is the second pillar of the fast boot:
+Each attacker is identified by a fingerprint: their source IP address, and nothing else. Storage is a **three-level qcow2 chain**, and it is the second pillar of the fast boot:
 
 ```
 honeypot.ext4                    ← base rootfs, 512 MB, shared, immutable
@@ -227,7 +228,9 @@ Not one attempt to exploit a vulnerability in the SSH protocol. No algorithm dow
 One more point: the honeypot listens on **port 2222**, not 22. I checked the startup logs — it has never been on anything else, and there is no NAT redirection.
 
 > [!WARNING]
-> **Moving SSH to a non-standard port protects you from nothing.** This honeypot absorbed 3,600 attempts per day on port 2222. Mass scanners sweep 2222, 2022, 22222, and 222 exactly as they sweep 22. Security through obscurity on the port number reduces noise in your logs, not your risk.
+> **Moving SSH to a common alternative port protects you from nothing.** This honeypot absorbed 3,600 attempts per day on port 2222. Mass scanners sweep 2222, 2022, 22222, and 222 exactly as they sweep 22. Security through obscurity on the port number reduces noise in your logs, not your risk.
+
+To be fair, 2222 is not exotic: it is probably the most common SSH port after 22, and scanners know it. This data shows that the usual alternative ports are swept as hard as 22. It does not tell whether a genuinely random high port would be found as quickly — see [Blind spots](#blind-spots).
 
 The attempt count per attacker is heavily skewed: median of 9 tries, 99th percentile at 723, and a record of **29,077 attempts** from a single address. The low median reflects bots that test three passwords and move on to the next target; the long tail is dedicated brute-forcers grinding away for weeks.
 
@@ -685,6 +688,39 @@ systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
 
 A malicious PAM module intercepts authentication upstream of everything else: that is persistence which survives a password change and a key rotation.
 
+### Looking for data — or rather, for the next hop
+
+The rootfs is seeded with lures: an `/opt/app/.env` holding a database password and fake AWS keys, admin notes in `/root/.notes`, and a `.bash_history` full of plausible commands (`cat .env`, `ssh deploy@prod-db-01.internal`, `scp backup.sql …`).
+
+**41 sessions, from 15 IPs, go after data.** Very few, but not zero:
+
+| What | Sessions | IPs | Period |
+|---|---:|---:|---|
+| Read the root password hash from `/etc/shadow` | 31 | 5 | June – August |
+| Dump shell histories, `known_hosts`, `~/.ssh/config`, `/etc/hosts` | 9 | 9 | September 15–20 |
+| Search the whole disk for `.env` files and print them | 1 | 1 | June 23 |
+| Open one of the lures directly (`.env`, `.notes`, …) | 0 | 0 | — |
+
+The history harvester, always with a `SSH-2.0-Go` client, is the most telling (abridged):
+
+```bash
+echo 'debian' | sudo -S -p '' su - -c 'bash -c '\''
+{
+  cat ~/.bash_history 2>/dev/null
+  cat /root/.bash_history 2>/dev/null
+  cat /home/*/.bash_history 2>/dev/null
+  cat ~/.ssh/known_hosts 2>/dev/null
+  cat ~/.ssh/config 2>/dev/null
+  cat /etc/hosts 2>/dev/null
+} | tail -n 20000
+'\''' 2>/dev/null
+exit
+```
+
+It does not want documents: it wants to know **which other machines this one talks to**. Histories, `known_hosts`, and SSH config are a map of the next hops. And it got exactly that — my planted history, `ssh deploy@prod-db-01.internal` included. Nobody came back to follow the lead, though: the collection is automated, and the exploitation, if any, happens elsewhere.
+
+Note that none of this needs a network: the stolen data leaves through the SSH session's output, like everything else the attacker sees. The absence of a network interface prevents downloading, not reading.
+
 ### Direct binary transfers
 
 19 sessions, from 18 IPs, push an **ELF directly through the terminal stream**, without `wget` or `curl`. You can see the `\x7fELF` header appear raw in the recording. The largest session in the corpus is **47 MB** on its own.
@@ -850,7 +886,7 @@ Three French hosts distribute the `kswpad` family. A useful reminder: malicious 
 
 1. **Password brute-forcing was the only vector observed.** Zero vulnerability exploitation across 530,860 attempts. SSH's real attack surface is not the protocol, it is your passwords.
 2. **The overwhelming majority of access is not exploited immediately.** 12,864 sessions end with `exit` and nothing else. The market is segmented: some validate credentials, others buy and exploit them.
-3. **The goal is almost always resource theft.** The recon block is entirely focused on CPU, RAM, and disk. Nobody came looking for my data.
+3. **The goal is almost always resource theft.** The recon block is entirely focused on CPU, RAM, and disk. Data hunting exists but is marginal — 41 sessions — and it targets credentials and pivots (password hashes, histories, `known_hosts`) more than content. That rarity is partly a bias of this setup: see [Blind spots](#blind-spots).
 4. **Competition between botnets is fierce.** `pkill`, `iptables -F`, deleting rival files, changing the root password to lock everyone else out.
 5. **Anti-forensics is essentially nonexistent.** 0.15% of sessions cover their tracks. Your logs hold the truth, if you read them.
 
@@ -858,7 +894,7 @@ Three French hosts distribute the `kswpad` family. A useful reminder: malicious 
 
 - **Disable password authentication.** `PasswordAuthentication no` and `PubkeyAuthentication yes`. That neutralizes 100% of what I observed over five months.
 - **Forbid direct root login.** `PermitRootLogin no` — `root` accounts for 78.6% of attempts.
-- **Do not rely on changing the port.** 3,600 attempts per day on port 2222.
+- **Do not rely on changing the port.** 3,600 attempts per day on port 2222 — admittedly the most predictable alternative.
 - **Alert on the obvious signatures.** The `mdrfckr` key in an `authorized_keys`, the `345gs5662d34` username, a `libssh` client banner: three detection rules with virtually no false positives.
 - **Monitor `authorized_keys` for integrity**, not just permissions. The attack starts with `rm -rf .ssh`, and a plain `chattr +i` is already anticipated.
 - **Blocking `wget` and `curl` is not enough.** Payloads also travel straight down the SSH channel.
@@ -870,6 +906,20 @@ The microVM architecture costs more than an emulated shell, both in development 
 The constraint that drives everything is boot time. A shell served in a median of 39 ms is indistinguishable from a real server; the same shell served in two seconds gives the trap away before the first command. That is what forces the `microvm` machine type rather than a conventional VM, and the three-level qcow2 chain rather than an image copy. Every other architectural decision follows from that budget of a few tens of milliseconds.
 
 And per-attacker persistence via qcow2 overlays is what gives this data its depth: being able to watch the same `kswpad` operator return to *their* machine over four months is something a stateless honeypot will never produce.
+
+---
+
+## Blind spots
+
+The architecture that makes this honeypot safe also shapes what it can see. Four biases are worth stating plainly.
+
+**The password is tied to the IP.** In a two-tier market, one bot validates the credential and another actor, from another IP, uses it. Here that second actor gets a different assigned password (nine chances in ten that the purchased credential fails), and even if they get in, they land on a fresh VM without the first actor's changes. I therefore capture the first link of the chain far better than the second — and the second is the one most likely to go after data.
+
+**No network, no second stage.** Secret hunting (cloud keys, `.env` files, wallets) is often done by scripts downloaded in a second stage. Those downloads fail here, so that stage never runs. The same choice means I have the payload URLs, not the binaries: what they actually do remains to be analyzed, in an isolated sandbox.
+
+**The VM looks worthless.** 256 MB of RAM, a tiny disk, no service actually running. The automated recon block rates it as poor and moves on before a human ever looks.
+
+**Port 2222 is not exotic.** Whether scanners really try every port, or only 22 and the usual alternatives, is beyond the reach of this setup. Answering it calls for a different sensor: listening on many ports — or all of them — and logging every connection, every port touched, and every probe scanners send to identify the service. That is a project of its own.
 
 ---
 

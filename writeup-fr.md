@@ -19,6 +19,7 @@
 - [Les campagnes identifiées](#les-campagnes-identifiées)
 - [Les payloads et leurs URLs](#les-payloads-et-leurs-urls)
 - [Ce que j'en retiens](#ce-que-jen-retiens)
+- [Angles morts](#angles-morts)
 
 ---
 
@@ -132,7 +133,7 @@ C'est ce que permet le type de machine `microvm` de QEMU : pas de BIOS à exécu
 
 ### La persistance par attaquant
 
-Chaque attaquant est identifié par une empreinte (IP + version du client SSH + username). Le stockage est une **chaîne qcow2 à trois niveaux**, et c'est le second pilier de la rapidité de démarrage :
+Chaque attaquant est identifié par une empreinte : son adresse IP source, et rien d'autre. Le stockage est une **chaîne qcow2 à trois niveaux**, et c'est le second pilier de la rapidité de démarrage :
 
 ```
 honeypot.ext4                    ← rootfs de base, 512 Mo, partagé, immuable
@@ -227,7 +228,9 @@ Pas une seule tentative d'exploitation de vulnérabilité dans le protocole SSH.
 Autre point : le honeypot écoute sur le **port 2222**, pas sur le 22. Vérification faite dans les logs de démarrage, il n'a jamais été sur autre chose, et il n'y a aucune redirection NAT.
 
 > [!WARNING]
-> **Déplacer SSH sur un port non standard ne protège de rien.** Ce honeypot a encaissé 3 600 tentatives par jour sur le port 2222. Les scanners de masse balayent 2222, 2022, 22222 et 222 exactement comme le 22. Le « security through obscurity » sur le numéro de port réduit le bruit dans vos logs, pas le risque.
+> **Déplacer SSH sur un port alternatif courant ne protège de rien.** Ce honeypot a encaissé 3 600 tentatives par jour sur le port 2222. Les scanners de masse balayent 2222, 2022, 22222 et 222 exactement comme le 22. Le « security through obscurity » sur le numéro de port réduit le bruit dans vos logs, pas le risque.
+
+Soyons honnêtes : 2222 n'a rien d'exotique. C'est probablement le port SSH le plus courant après le 22, et les scanners le savent. Ces données montrent que les ports alternatifs habituels sont balayés aussi fort que le 22. Elles ne disent pas si un port haut vraiment aléatoire serait trouvé aussi vite — voir [Angles morts](#angles-morts).
 
 Le nombre de tentatives par attaquant est très asymétrique : médiane à 9 essais, 99ᵉ percentile à 723, et un record à **29 077 tentatives** depuis une seule adresse. La médiane basse correspond aux bots qui testent trois mots de passe et passent à la cible suivante ; la longue traîne, à des bruteforcers dédiés qui s'acharnent pendant des semaines.
 
@@ -685,6 +688,39 @@ systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
 
 Un module PAM malveillant intercepte les authentifications en amont de tout : c'est de la persistance qui survit à un changement de mot de passe et à une rotation de clés.
 
+### La chasse aux données — ou plutôt au rebond suivant
+
+Le rootfs contient des leurres : un `/opt/app/.env` avec un mot de passe de base de données et de fausses clés AWS, des notes d'admin dans `/root/.notes`, et un `.bash_history` rempli de commandes plausibles (`cat .env`, `ssh deploy@prod-db-01.internal`, `scp backup.sql …`).
+
+**41 sessions, depuis 15 IP, vont chercher des données.** C'est très peu, mais ce n'est pas zéro :
+
+| Quoi | Sessions | IP | Période |
+|---|---:|---:|---|
+| Lecture du hash du mot de passe root dans `/etc/shadow` | 31 | 5 | juin – août |
+| Aspiration des historiques shell, `known_hosts`, `~/.ssh/config`, `/etc/hosts` | 9 | 9 | 15–20 septembre |
+| Recherche de tous les fichiers `.env` du disque pour les afficher | 1 | 1 | 23 juin |
+| Ouverture directe d'un des leurres (`.env`, `.notes`…) | 0 | 0 | — |
+
+Le collecteur d'historiques, toujours avec un client `SSH-2.0-Go`, est le plus parlant (extrait) :
+
+```bash
+echo 'debian' | sudo -S -p '' su - -c 'bash -c '\''
+{
+  cat ~/.bash_history 2>/dev/null
+  cat /root/.bash_history 2>/dev/null
+  cat /home/*/.bash_history 2>/dev/null
+  cat ~/.ssh/known_hosts 2>/dev/null
+  cat ~/.ssh/config 2>/dev/null
+  cat /etc/hosts 2>/dev/null
+} | tail -n 20000
+'\''' 2>/dev/null
+exit
+```
+
+Il ne cherche pas des documents : il cherche à savoir **avec quelles autres machines celle-ci communique**. Les historiques, `known_hosts` et la config SSH forment une carte des rebonds possibles. Et il a obtenu exactement ça — mon faux historique, `ssh deploy@prod-db-01.internal` compris. Mais personne n'est revenu suivre la piste : la collecte est automatisée, et l'exploitation, s'il y en a une, se fait ailleurs.
+
+À noter : rien de tout cela n'a besoin de réseau. Les données volées sortent par la sortie de la session SSH, comme tout ce que voit l'attaquant. L'absence d'interface réseau empêche de télécharger, pas de lire.
+
 ### Transferts binaires directs
 
 19 sessions, depuis 18 IP, poussent un **ELF directement dans le flux du terminal**, sans passer par `wget` ou `curl`. On voit l'en-tête `\x7fELF` apparaître brut dans l'enregistrement. La plus grosse session du corpus fait **47 Mo** à elle seule.
@@ -850,7 +886,7 @@ Trois hôtes français distribuent la famille `kswpad`. C'est un rappel utile : 
 
 1. **Le bruteforce de mot de passe est le seul vecteur observé.** Zéro exploitation de vulnérabilité en 530 860 tentatives. La surface d'attaque réelle de SSH, ce n'est pas le protocole, ce sont vos mots de passe.
 2. **L'écrasante majorité des accès ne sont pas exploités immédiatement.** 12 864 sessions se terminent par `exit` sans rien faire. Le marché est segmenté : certains valident des identifiants, d'autres les achètent et les exploitent.
-3. **Le but est presque toujours le vol de ressources.** Le bloc de recon est entièrement centré sur CPU, RAM et disque. Personne n'est venu chercher mes données.
+3. **Le but est presque toujours le vol de ressources.** Le bloc de recon est entièrement centré sur CPU, RAM et disque. La chasse aux données existe mais reste marginale — 41 sessions — et vise les identifiants et les rebonds (hash de mot de passe, historiques, `known_hosts`) plus que le contenu. Cette rareté est en partie un biais du dispositif : voir [Angles morts](#angles-morts).
 4. **La concurrence entre botnets est féroce.** `pkill`, `iptables -F`, suppression des fichiers rivaux, changement du mot de passe root pour verrouiller les autres dehors.
 5. **L'anti-forensique est quasi inexistante.** 0,15 % des sessions effacent leurs traces. Vos logs contiennent la vérité, si vous les lisez.
 
@@ -858,7 +894,7 @@ Trois hôtes français distribuent la famille `kswpad`. C'est un rappel utile : 
 
 - **Désactivez l'authentification par mot de passe.** `PasswordAuthentication no` et `PubkeyAuthentication yes`. Cela neutralise 100 % de ce que j'ai observé sur cinq mois.
 - **Interdisez le login root direct.** `PermitRootLogin no` — `root` concentre 78,6 % des tentatives.
-- **Ne comptez pas sur le changement de port.** 3 600 tentatives par jour sur le port 2222.
+- **Ne comptez pas sur le changement de port.** 3 600 tentatives par jour sur le port 2222 — certes l'alternative la plus prévisible.
 - **Surveillez les signatures évidentes.** La clé `mdrfckr` dans un `authorized_keys`, le login `345gs5662d34`, une bannière client `libssh` : trois règles de détection quasiment sans faux positifs.
 - **Surveillez `authorized_keys` par intégrité**, pas seulement par permissions. L'attaque commence par `rm -rf .ssh`, un simple `chattr +i` est anticipé.
 - **Bloquer `wget` et `curl` ne suffit pas.** Les payloads transitent aussi directement par le canal SSH.
@@ -870,6 +906,20 @@ L'architecture microVM coûte plus cher qu'un shell émulé, en développement c
 La contrainte qui décide de tout, c'est le temps de démarrage. Un shell servi en 39 ms médians est indiscernable d'un serveur réel ; le même shell servi en deux secondes trahit le piège avant la première commande. C'est ce qui impose le type de machine `microvm` plutôt qu'une VM classique, et la chaîne qcow2 à trois niveaux plutôt qu'une copie d'image. Tout le reste de l'architecture découle de ce budget de quelques dizaines de millisecondes.
 
 Et la persistance par attaquant, via les overlays qcow2, est ce qui donne à ces données leur profondeur : pouvoir observer le même opérateur `kswpad` revenir sur *sa* machine pendant quatre mois, c'est une information qu'un honeypot sans état ne produira jamais.
+
+---
+
+## Angles morts
+
+L'architecture qui rend ce honeypot sûr conditionne aussi ce qu'il peut voir. Quatre biais méritent d'être dits clairement.
+
+**Le mot de passe est lié à l'IP.** Dans un marché à deux étages, un bot valide l'identifiant et un autre acteur, depuis une autre IP, l'utilise. Ici, ce second acteur se voit attribuer un autre mot de passe (neuf chances sur dix que l'identifiant acheté échoue), et même s'il entre, il tombe sur une VM vierge, sans les modifications du premier. Je capture donc bien mieux le premier maillon de la chaîne que le second — et c'est le second qui irait le plus probablement chercher des données.
+
+**Pas de réseau, pas de second étage.** La chasse aux secrets (clés cloud, fichiers `.env`, wallets) passe souvent par des scripts téléchargés en second étage. Ces téléchargements échouent ici, donc cette étape ne s'exécute jamais. Le même choix fait que j'ai les URLs des payloads, pas les binaires : ce qu'ils font réellement reste à analyser, dans un bac à sable isolé.
+
+**La VM n'a aucune valeur apparente.** 256 Mo de RAM, un disque minuscule, aucun service qui tourne vraiment. Le bloc de recon automatique la juge sans intérêt et passe son chemin avant qu'un humain ne s'y intéresse.
+
+**Le port 2222 n'est pas exotique.** Savoir si les scanners essaient vraiment tous les ports, ou seulement le 22 et les alternatives habituelles, dépasse ce dispositif. Pour y répondre, il faut un autre capteur : écouter sur de nombreux ports — voire tous — et journaliser chaque connexion, chaque port touché et chaque sonde envoyée par les scanners pour identifier le service. C'est un projet à part entière.
 
 ---
 

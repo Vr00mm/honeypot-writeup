@@ -801,7 +801,7 @@ URLhaus identifie `kal64` et `kswpad` comme **BillGates / Elknot**, un bot DDoS 
 
 ### Famille « /linux » — un binaire, beaucoup d'hôtes
 
-Le même schéma d'URL sur 13 hôtes différents, majoritairement des IP Alibaba Cloud :
+Le même schéma d'URL sur 15 hôtes différents, majoritairement des IP Alibaba Cloud :
 
 | Hôte | Pays | URL |
 |---|---|---|
@@ -819,6 +819,7 @@ Le même schéma d'URL sur 13 hôtes différents, majoritairement des IP Alibaba
 | `47.95.111.18` | 🇨🇳 Chine | `http://47.95.111.18:8419/linux` |
 | `123.57.51.183` | 🇨🇳 Chine | `http://123.57.51.183:6707/linux` |
 | `120.26.141.203` | 🇨🇳 Chine | `http://120.26.141.203:8808/linux` |
+| `59.110.9.189` | 🇨🇳 Chine | `http://59.110.9.189:9684/linux` |
 
 Chaque hôte utilise un port haut différent. L'infrastructure est jetable : chaque IP ne sert que quelques sessions avant d'être remplacée.
 
@@ -848,7 +849,6 @@ URLhaus a collecté **15 scripts Perl différents** sur `154.70.152.216/zed` : l
 | `45.153.34.212` | 🇳🇱 Pays-Bas | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | attribué par ThreatFox à **Diicot**, un groupe roumanophone : dropper Mirai et proxy de minage XMRig ; fichiers à point pour se cacher d'un `ls` |
 | `64.89.161.144` | 🇺🇸 États-Unis | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | mineur **XMRig** selon URLhaus ; chemin aléatoire — anti-signature d'URL |
 | `31.56.209.39` | 🇳🇱 Pays-Bas | `/wget.sh`, `/curl.sh` | **Mirai** selon URLhaus ; double dropper selon l'outil disponible |
-| `59.110.9.189` | 🇨🇳 Chine | `:9684/linux` | famille `/linux` |
 
 La chaîne complète de `fakepika` illustre bien le pattern « télécharger, exécuter, effacer » :
 

@@ -801,7 +801,7 @@ URLhaus identifies `kal64` and `kswpad` as **BillGates / Elknot**, a Linux DDoS 
 
 ### The "/linux" family — one binary, many hosts
 
-The same URL pattern across 13 different hosts, mostly Alibaba Cloud addresses:
+The same URL pattern across 15 different hosts, mostly Alibaba Cloud addresses:
 
 | Host | Country | URL |
 |---|---|---|
@@ -819,6 +819,7 @@ The same URL pattern across 13 different hosts, mostly Alibaba Cloud addresses:
 | `47.95.111.18` | 🇨🇳 China | `http://47.95.111.18:8419/linux` |
 | `123.57.51.183` | 🇨🇳 China | `http://123.57.51.183:6707/linux` |
 | `120.26.141.203` | 🇨🇳 China | `http://120.26.141.203:8808/linux` |
+| `59.110.9.189` | 🇨🇳 China | `http://59.110.9.189:9684/linux` |
 
 Each host uses a different high port. The infrastructure is disposable: each IP serves only a handful of sessions before being replaced.
 
@@ -848,7 +849,6 @@ URLhaus has collected **15 different Perl scripts** from `154.70.152.216/zed`: t
 | `45.153.34.212` | 🇳🇱 Netherlands | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | attributed by ThreatFox to **Diicot**, a Romanian-speaking group: Mirai dropper and XMRig mining proxy; dotfiles to hide from a plain `ls` |
 | `64.89.161.144` | 🇺🇸 United States | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | **XMRig** miner according to URLhaus; randomized path — URL signature evasion |
 | `31.56.209.39` | 🇳🇱 Netherlands | `/wget.sh`, `/curl.sh` | **Mirai** according to URLhaus; dual dropper depending on available tooling |
-| `59.110.9.189` | 🇨🇳 China | `:9684/linux` | `/linux` family |
 
 The full `fakepika` chain is a textbook "download, run, delete" pattern:
 

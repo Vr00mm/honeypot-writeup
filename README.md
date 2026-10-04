@@ -1,8 +1,11 @@
 # Five Months of an SSH Honeypot: 530,860 Attempts, 698 microVMs, and a Botnet That Hasn't Learned Anything Since 2018
 
-> **TL;DR** — I exposed a fake SSH server to the internet for 133 days. Every attacker who guesses a password gets their own disposable QEMU microVM, with no network access and a custom kernel. The result: 530,860 authentication attempts, 6,677 unique IP addresses, 12,939 recorded sessions, and a very concrete picture of what the internet's offensive background noise actually looks like.
+> **TL;DR** — I exposed a fake SSH server to the internet for 133 days. Every attacker who guesses a password gets their own disposable QEMU microVM, with no network access and a custom kernel. The result: 530,860 authentication attempts, 6,677 unique IP addresses, 1,656 successful logins, 12,939 recorded commands, and a very concrete picture of what the internet's offensive background noise actually looks like.
 
 *French version: [writeup-fr.md](writeup-fr.md)*
+
+> [!NOTE]
+> **Updated 4 October 2026.** The first version counted *sessions*, which are in fact SSH channels: bots send each command in its own channel, so a single connection produces about thirteen "sessions" on average. Every figure that used sessions as its unit is now computed per **successful connection that runs commands** (993). This changes one conclusion — China is the **first** country by connections that run commands, not the seventh — and removes an artifact: the `exit` reported as the most typed command was appended by the honeypot itself after each command. Two commands quoted in the competition section (`iptables -F`, `multics.x64`) turned out to be the content of a file uploaded over `scp`, not executed commands; they are removed. Authentication figures are unchanged. Also added since publication: [data hunting](#looking-for-data--or-rather-for-the-next-hop), payload identification via abuse.ch, and [blind spots](#blind-spots).
 
 ---
 
@@ -165,7 +168,7 @@ Every session is recorded in **asciinema v2** format, byte by byte, with microse
 [1.892635207,"i","l"]
 ```
 
-Yes, that is an attacker typing `curl`, one letter at a time, inside a VM with no network. In total: **736 MB of recordings** across 12,939 sessions.
+Yes, that is an attacker typing `curl`, one letter at a time, inside a VM with no network. In total: **736 MB of recordings** across 12,939 recordings.
 
 The SQLite schema is deliberately simple:
 
@@ -192,27 +195,29 @@ passwords      -- deduplication of attempted passwords
 | Success rate | 0.31% |
 | Unique IP addresses | **6,677** |
 | Distinct source countries | **138** |
-| Shell sessions opened | **12,939** |
+| Successful logins that run commands | **993** |
+| Commands executed (one SSH channel each) | 12,939 |
 | microVMs created | 698 |
 | Distinct passwords tried | **77,173** |
 | Distinct commands observed | 1,855 |
 | Average attempts / day | ~3,612 |
-| Average sessions / day | ~97 |
+| Average connections running commands / day | ~6.8 |
+| Average commands / day | ~88 |
 
 ### Distribution over time
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'xyChart':{'backgroundColor':'transparent','titleColor':'#8b949e','xAxisLabelColor':'#8b949e','xAxisTitleColor':'#8b949e','xAxisTickColor':'#8b949e','xAxisLineColor':'#8b949e','yAxisLabelColor':'#8b949e','yAxisTitleColor':'#8b949e','yAxisTickColor':'#8b949e','yAxisLineColor':'#8b949e','plotColorPalette':'#4C72B0'}}}}%%
 xychart-beta
-    title "Shell sessions per month"
+    title "Connections running commands, per month"
     x-axis ["Apr 26", "May 26", "Jun 26", "Jul 26", "Aug 26", "Sep 26"]
-    y-axis "Sessions" 0 --> 6000
-    bar [5, 1582, 5773, 2041, 1034, 2504]
+    y-axis "Connections" 0 --> 450
+    bar [5, 129, 400, 148, 107, 204]
 ```
 
-The June spike (5,773 sessions) corresponds to a massive, tightly concentrated campaign: 18 June alone accounts for 653 sessions. The heaviest days by *attempt* count fall elsewhere — 31,309 on 6 May, 30,634 on 8 September — which shows that mass brute-forcing and shell exploitation are two activities run by different actors.
+The June spike (400 connections) corresponds to a massive, tightly concentrated campaign: 18 June alone accounts for 54 connections and 653 commands. The heaviest days by *attempt* count fall elsewhere — 31,309 on 6 May, 30,634 on 8 September — which shows that mass brute-forcing and exploitation are two activities run by different actors.
 
-By hour of day, the distribution is remarkably flat: between 275 and 969 sessions depending on the UTC hour, with no nighttime dip. This is fully automated; nobody sleeps.
+By hour of day, the distribution is remarkably flat: between 26 and 79 connections depending on the UTC hour, with no nighttime dip. This is fully automated; nobody sleeps.
 
 ---
 
@@ -253,14 +258,14 @@ pie showData
     "others" : 139
 ```
 
-But the breakdown **by shell sessions opened** is very nearly the inverse:
+But the breakdown **by connections that run commands** is very nearly the inverse:
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'pie1':'#4C72B0','pie2':'#DD8452','pie3':'#55A868','pie4':'#C44E52','pie5':'#8172B3','pie6':'#937860','pie7':'#C878AE','pie8':'#7F8C8D','pie9':'#B9A05C','pie10':'#64B5CD','pie11':'#A05195','pie12':'#4D7C6F','pieTitleTextSize':'18px','pieTitleTextColor':'#8b949e','pieSectionTextColor':'#ffffff','pieSectionTextSize':'13px','pieLegendTextColor':'#8b949e','pieLegendTextSize':'14px','pieStrokeColor':'#ffffff','pieStrokeWidth':'2px','pieOuterStrokeColor':'#8b949e','pieOuterStrokeWidth':'1px'}}}%%
 pie showData
-    title Shell sessions by library
-    "libssh" : 11103
-    "Go (x/crypto/ssh)" : 1804
+    title Connections running commands, by library
+    "libssh" : 687
+    "Go (x/crypto/ssh)" : 274
     "russh (Rust)" : 19
     "OpenSSH" : 12
     "paramiko" : 1
@@ -268,16 +273,16 @@ pie showData
 
 That gap is not a statistical curiosity: **it is evidence that brute-forcing and exploiting are two separate trades, using different tooling.**
 
-| Library | IPs | Attempts | % att. | Successes | Att./IP | Sessions | % sess. | Window |
+| Library | IPs | Attempts | % att. | Successes | Att./IP | Active conn. | % active | Window |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
-| **Go** (`x/crypto/ssh`) | 2,019 | 370,717 | 69.8% | 554 | 184 | 1,804 | 13.9% | 29 Apr → 21 Sep |
-| **libssh** | 2,928 | 96,978 | 18.2% | 728 | 33 | **11,103** | **85.8%** | 29 Apr → 21 Sep |
-| **OpenSSH** | 1,349 | 36,543 | 6.9% | 100 | 27 | 12 | 0.1% | 28 Apr → 21 Sep |
+| **Go** (`x/crypto/ssh`) | 2,019 | 370,717 | 69.8% | 554 | 184 | 274 | 27.6% | 29 Apr → 21 Sep |
+| **libssh** | 2,928 | 96,978 | 18.2% | 728 | 33 | **687** | **69.2%** | 29 Apr → 21 Sep |
+| **OpenSSH** | 1,349 | 36,543 | 6.9% | 100 | 27 | 12 | 1.2% | 28 Apr → 21 Sep |
 | **libssh2** | 261 | 25,178 | 4.7% | 254 | 96 | **0** | 0% | 29 Apr → 21 Sep |
-| **russh** (Rust) | 67 | 1,128 | 0.2% | 19 | 17 | 19 | 0.1% | 29 Apr → 17 Sep |
+| **russh** (Rust) | 67 | 1,128 | 0.2% | 19 | 17 | 19 | 1.9% | 29 Apr → 17 Sep |
 | **SSH.NET** (C#) | 2 | 708 | 0.1% | 0 | 354 | 0 | 0% | 1 Sep → 21 Sep |
 | **sshcustom** | 2 | 94 | — | 1 | 47 | 0 | 0% | 3 Jul |
-| **paramiko** (Python) | 6 | 34 | — | 0 | 6 | 1 | — | 14 May → 16 Sep |
+| **paramiko** (Python) | 6 | 34 | — | 0 | 6 | 1 | 0.1% | 14 May → 16 Sep |
 | **PuTTY** | 3 | 11 | — | 0 | 4 | 0 | 0% | 6 May → 20 Sep |
 
 #### 1. Go: the mass brute-forcing engine
@@ -286,34 +291,34 @@ That gap is not a statistical curiosity: **it is evidence that brute-forcing and
 
 It is also the client behind the targeted reconnaissance: **1,662 of the 1,663 attempts on the `remi-ziolkowski` username** come from it. Deriving usernames from the domain name is therefore a feature of this specific tool, not a general behavior of the landscape.
 
-Its IPs are widely distributed (CN:327, KR:231, US:149, PK:135). For 554 successful authentications, only 1,804 sessions: it validates far more credentials than it exploits.
+Its IPs are widely distributed (CN:327, KR:231, US:149, PK:135). Of its 554 successful authentications, only 274 go on to run commands — about half: it validates as many credentials as it uses.
 
 That a single codebase concentrates 70% of the offensive SSH traffic reaching me is itself a finding: mass brute-forcing is not a cottage industry, it is a small number of tools reused at enormous scale. And Go has won that niche, for the same reasons it wins elsewhere — static binaries, trivial cross-compilation, cheap concurrency.
 
 #### 2. libssh: the exploiter
 
-libssh makes four times fewer attempts than Go, but **opens 11,103 sessions, 85.8% of every shell session in the corpus.** It is the tool of those who actually come in.
+libssh makes four times fewer attempts than Go, but **runs commands in 687 connections, 69% of all connections that run any.** It is the tool of those who actually come in.
 
-Here the version carries a finding, so I keep it: **`libssh_0.9.6` accounts for 88,850 of the family's 96,978 attempts, and 10,384 of its 11,103 sessions.** Its activity window is the decisive detail — **21 May to 21 September**, matching to the day the Outlaw campaign window identified earlier through the `mdrfckr` key and the `chattr -ia .ssh` block. Two signals collected independently (protocol banner on one side, keystrokes on the other) point at the same actor.
+Here the version carries a finding, so I keep it: **`libssh_0.9.6` accounts for 88,850 of the family's 96,978 attempts, and 640 of its 687 active connections.** Its activity window is the decisive detail — **21 May to 21 September**, matching to the day the Outlaw campaign window identified earlier through the `mdrfckr` key and the `chattr -ia .ssh` block. Two signals collected independently (protocol banner on one side, keystrokes on the other) point at the same actor.
 
 > [!TIP]
 > **libssh 0.9.6 was released in December 2020.** A botnet still running on it in 2026 has not recompiled its tooling in five years. That fits an SSH key unchanged since 2018: these operations are not maintained, they are copied.
 
 #### 3. libssh2: pure credential validation
 
-libssh2 — a different library from libssh, despite the name — shows the cleanest profile in the corpus: 25,178 attempts, **254 successful authentications, and zero shell sessions.**
+libssh2 — a different library from libssh, despite the name — shows the cleanest profile in the corpus: 25,178 attempts, **254 successful authentications, and not a single command.**
 
-These actors guess the password, authentication succeeds, and they disconnect without ever requesting a shell. They are not trying to exploit the machine: they are building an inventory of valid credentials. This is the upstream half of the two-tier market described earlier, isolated in pure form in the data.
+These actors guess the password, authentication succeeds, and they disconnect without running anything. They are not trying to exploit the machine: they are building an inventory of valid credentials. This is the upstream half of the two-tier market described earlier, isolated in pure form in the data.
 
-SSH.NET shows exactly the same profile on a smaller scale: 708 attempts, no sessions — and in its case, no successes either.
+SSH.NET shows exactly the same profile on a smaller scale: 708 attempts, no commands — and in its case, no successes either.
 
 #### 4. OpenSSH: the banner everybody forges
 
-The OpenSSH family totals 1,349 IPs and 36,543 attempts for **12 sessions**. That is the anomaly in the table: the most legitimate library in the world is also the one that exploits almost nothing. The explanation is simple — most of these banners are fake, and they cover two opposite strategies.
+The OpenSSH family totals 1,349 IPs and 36,543 attempts for **12 connections that run commands**. That is the anomaly in the table: the most legitimate library in the world is also the one that exploits almost nothing. The explanation is simple — most of these banners are fake, and they cover two opposite strategies.
 
 **`SSH-2.0-OpenSSH`, with no version number** (31,101 attempts). No released version of OpenSSH announces that: the real banner always carries the version. This is custom tooling with a truncated banner, and its profile is extreme: **just 5 IP addresses, i.e. 6,220 tries per IP**, with the widest dictionary in the corpus — **7,620 distinct usernames** and 24,380 passwords. Five dedicated machines, in RU, FR, UA, and US, hammering away for four and a half months.
 
-**`SSH-2.0-OpenSSH_7.4`** (4,549 attempts). OpenSSH 7.4 dates from December 2016, the CentOS 7 era. The profile is exactly inverted: **1,313 IP addresses at 3 tries per IP**, and zero sessions. An extremely wide, extremely thin sheet, from CN:248, IN:166, KR:133. The banner is presumably chosen to blend into the noise of old servers, and the "three tries then move on" pattern is designed to stay under `fail2ban` thresholds.
+**`SSH-2.0-OpenSSH_7.4`** (4,549 attempts). OpenSSH 7.4 dates from December 2016, the CentOS 7 era. The profile is exactly inverted: **1,313 IP addresses at 3 tries per IP**, and no commands. An extremely wide, extremely thin sheet, from CN:248, IN:166, KR:133. The banner is presumably chosen to blend into the noise of old servers, and the "three tries then move on" pattern is designed to stay under `fail2ban` thresholds.
 
 These two entries illustrate the two opposite evasions: concentrate on few IPs and accept being blocked, or dilute across thousands of IPs and never trip a threshold.
 
@@ -321,7 +326,7 @@ The rest of the family is residual, but one entry is worth flagging: **a South A
 
 #### 5. The long tail: modern tooling and humans
 
-- **russh** (Rust): 67 IPs, 1,128 attempts, 19 sessions. Few usernames tried (5 distinct) but 135 passwords — targeting, not sweeping. Recent tooling, worth watching: this is probably what tomorrow's brute-forcing looks like.
+- **russh** (Rust): 67 IPs, 1,128 attempts, 19 connections running one command each. Few usernames tried (5 distinct) but 135 passwords — targeting, not sweeping. Recent tooling, worth watching: this is probably what tomorrow's brute-forcing looks like.
 - **SSH.NET** (C#/.NET ecosystem): only appeared in September, 2 IPs, 708 attempts exclusively against `root`, 382 passwords, no successes. Windows tooling.
 - **sshcustom**: 2 Turkish IPs, 94 attempts on a single day. Someone testing their own tool — the banner does not even try to lie.
 - **paramiko** (Python): 6 IPs, 34 attempts. Hand-rolled scripts.
@@ -543,38 +548,36 @@ Germany in second place and Bulgaria in tenth obviously do not reflect local cri
 
 Comparing this table with the previous one is instructive. **Germany drops from 2nd to 11th place**: few addresses, but enormous volume per address — servers dedicated to brute-forcing. Conversely, **South Korea and India show many IPs with few attempts each**: the signature of a fleet of compromised devices, not rented attack infrastructure.
 
-### By shell sessions obtained (12,939 sessions, 71 countries)
+### By connections that run commands (993 connections, 71 countries)
 
-The ranking changes completely once you look at who actually gets in:
+The ranking shifts once you look at who actually uses the access:
 
-| # | Country | Sessions | % |
+| # | Country | Connections | % |
 |---:|---|---:|---:|
-| 1 | 🇺🇸 United States | 1,857 | 14.4% |
-| 2 | 🇮🇩 Indonesia | 1,101 | 8.5% |
-| 3 | 🇩🇪 Germany | 826 | 6.4% |
-| 4 | 🇭🇰 Hong Kong | 814 | 6.3% |
-| 5 | 🇨🇱 Chile | 635 | 4.9% |
-| 6 | 🇰🇷 South Korea | 633 | 4.9% |
-| 7 | 🇨🇳 China | 524 | 4.0% |
-| 8 | 🇻🇳 Vietnam | 503 | 3.9% |
-| 9 | 🇮🇳 India | 455 | 3.5% |
-| 10 | 🇸🇬 Singapore | 416 | 3.2% |
+| 1 | 🇨🇳 China | 152 | 15.3% |
+| 2 | 🇺🇸 United States | 134 | 13.5% |
+| 3 | 🇩🇪 Germany | 64 | 6.4% |
+| 4 | 🇮🇩 Indonesia | 63 | 6.3% |
+| 5 | 🇭🇰 Hong Kong | 55 | 5.5% |
+| 6 | 🇰🇷 South Korea | 40 | 4.0% |
+| 7 | 🇳🇱 Netherlands | 38 | 3.8% |
+| 8 | 🇫🇷 France | 32 | 3.2% |
+| 9 | 🇻🇳 Vietnam | 31 | 3.1% |
+| 10 | 🇮🇳 India | 31 | 3.1% |
 
-**China falls from 24.6% of attempts to 4.0% of sessions.** Chinese-hosted infrastructure does blind volume; it is other actors — American, Indonesian, Chilean — who actually exploit the access obtained. That is consistent with a two-tier market: operators who scan and resell access on one side, operators who consume it on the other.
+**China stays first, but its weight drops: 24.6% of attempts, 15.3% of connections that run commands.** The sharper movements are elsewhere. The United States climbs from 4.9% of attempts to 13.5%, while Brazil (7.6% → 2.0%), Russia (5.9% → 0.3%), and Bulgaria (2.9% → 0) all but disappear. Some infrastructures only brute-force, others mostly use access: that is consistent with a two-tier market, but less clear-cut than the first version of this write-up claimed — it relied on session counts, which overweighted the most talkative bots.
 
 ---
 
 ## What they type once inside
 
-12,884 sessions contain at least one keystroke. But the vast majority are over in a fraction of a second: the median recording is **261 bytes**, which is the login banner and nothing else.
+**40% of successful logins (663) never run a single command.** The bot authenticates and disconnects: it is only validating the credential, to resell it or add it to a list. Exploitation comes later, and often from a different actor.
 
-The most frequently typed command in the entire corpus is `exit`, with **12,864 occurrences**. In other words: *almost every bot connects, confirms the login works, and leaves immediately.* They are only validating the credential, to resell it or add it to a list. Exploitation comes later, and often from a different actor.
-
-The real content lives in the few hundred sessions that go further.
+The other 60% run commands — about 13 each on average. Bots rarely open an interactive shell: they send each command in its own SSH channel (`exec`), and each channel is recorded as a session. That is why 1,656 successful logins produce 12,939 sessions.
 
 ### The reconnaissance block
 
-One specific command sequence recurs across more than 600 sessions, almost always in the same order. It is machine profiling, to decide what to deploy:
+One specific command sequence recurs in 687 connections — 69% of those that run commands — almost always in the same order. It is machine profiling, to decide what to deploy:
 
 | Command | Occurrences | Purpose |
 |---|---:|---|
@@ -626,7 +629,7 @@ On my honeypot the network calls fail silently — which evidently did not tip o
 
 ### Persistence
 
-**The SSH key.** 674 sessions, from 332 distinct IPs, inject the exact same public key:
+**The SSH key.** 675 connections, from 332 distinct IPs, inject the exact same public key:
 
 ```bash
 cd ~ && rm -rf .ssh && mkdir .ssh && echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEArDp4cun2lhr4KUhBGE7VvAcwdli2a8dbnrTOrbMz1+5O73fcBOx8NVbUT0bUanUV9tJ2/9p7+vD0EpZ3Tz/+0kX34uAx1RV/75GVOmNx+9EuWOnvNoaJe0QXxziIg9eLBHpgLMuakb5+BgTFB+rKJAw9u9FSTDengvS8hX1kNFS4Mjux0hJOK8rvcEmPecjdySYMb66nylAKGwCEE6WEQHmd1mUPgHwGQ0hWCwsQk13yCGPK5w6hYp5zYkFnvlC8hGmd4Ww+u97k6pfTGTUbJk14ujvcD9iUKQTTWYYjIIu5PmUux5bsZ0R4WFwdIe6+i6rBLAsPKgAySVKPRK+oRw== mdrfckr" >> .ssh/authorized_keys && chmod -R go= ~/.ssh && cd ~
@@ -637,7 +640,7 @@ cd ~ && rm -rf .ssh && mkdir .ssh && echo "ssh-rsa AAAAB3NzaC1yc2EAAAABJQAAAQEAr
 
 Note the `chattr -ia` beforehand: the operators know some administrators make `authorized_keys` immutable, and they plan for it. `lockr` is a variant found on certain firmwares.
 
-**Changing the root password.** 1,262 sessions, from 310 IPs, change the account password to a random 12-character string:
+**Changing the root password.** 635 connections, from 309 IPs, change the account password to a random 12-character string:
 
 ```bash
 echo -e "123456\ngXuV60qK6VQx\ngXuV60qK6VQx" | passwd | bash
@@ -645,7 +648,7 @@ echo -e "password\n3Yp7fdZtHwLY\n3Yp7fdZtHwLY" | passwd | bash
 echo -e "admin\neVgSCkxXyXXv\neVgSCkxXyXXv" | passwd | bash
 ```
 
-The first field is the old password — the one they just guessed. This is **locking the victim out**: once the password is changed, neither the legitimate administrator nor competing botnets can come back. Every session uses a different password, which suggests generation on the C2 side with the secret reported back.
+The first field is the old password — the one they just guessed. This is **locking the victim out**: once the password is changed, neither the legitimate administrator nor competing botnets can come back. Every connection uses a different password, which suggests generation on the C2 side with the secret reported back.
 
 Two more sophisticated attempts go through `usermod` with a proper SHA-512 hash, which works on systems where `passwd --stdin` does not exist:
 
@@ -659,17 +662,14 @@ The battlefield is crowded, and botnets actively evict one another:
 
 ```bash
 rm -rf /tmp/secure.sh; rm -rf /tmp/auth.sh; pkill -9 secure.sh; pkill -9 auth.sh; echo > /etc/hosts.deny; pkill -9 sleep;
-pkill -9 multics.x64
-killall -9 multics.x64
 pkill kswpad
-iptables -F
 ```
 
-`multics.x64` is a mining binary deployed by a rival family. The `echo > /etc/hosts.deny` and `iptables -F` (17 sessions) tear down protections put in place by… the previous botnet. A compromised machine is a contested resource.
+The `echo > /etc/hosts.deny` (12 connections) tears down protections put in place by… the previous botnet. A compromised machine is a contested resource.
 
 ### Covering tracks
 
-19 sessions from 16 IPs try to erase their passage:
+26 connections from 9 IPs try to erase their passage:
 
 ```bash
 unset HISTFILE; history -c; rm -f ~/.bash_history ~/.zsh_history ~/.mysql_history ~/.sqlite_history
@@ -677,9 +677,9 @@ set +o history
 history | tail -5
 ```
 
-That is very little — 0.15% of sessions. The conclusion is clear: **almost no attacker makes any anti-forensic effort at all.** They bet on nobody ever looking at the logs. The operational corollary is encouraging: if you *do* look at your logs, you will see them.
+That is very little — 2.6% of connections that run commands. The conclusion is clear: **almost no attacker makes any anti-forensic effort at all.** They bet on nobody ever looking at the logs. The operational corollary is encouraging: if you *do* look at your logs, you will see them.
 
-One session stands out for its discretion, with a `chmod` on a suggestively named PAM `.so` and an SSH service restart:
+One connection stands out for its discretion, with a `chmod` on a suggestively named PAM `.so` and an SSH service restart:
 
 ```bash
 chmod 644 /usr/lib/x86_64-linux-gnu/security/pam_verify_auth.so 2>/dev/null
@@ -692,11 +692,11 @@ A malicious PAM module intercepts authentication upstream of everything else: th
 
 The rootfs is seeded with lures: an `/opt/app/.env` holding a database password and fake AWS keys, admin notes in `/root/.notes`, and a `.bash_history` full of plausible commands (`cat .env`, `ssh deploy@prod-db-01.internal`, `scp backup.sql …`).
 
-**41 sessions, from 15 IPs, go after data.** Very few, but not zero:
+**29 connections, from 15 IPs, go after data.** Very few, but not zero:
 
-| What | Sessions | IPs | Period |
+| What | Connections | IPs | Period |
 |---|---:|---:|---|
-| Read the root password hash from `/etc/shadow` | 31 | 5 | June – August |
+| Read the root password hash from `/etc/shadow` | 19 | 5 | June – August |
 | Dump shell histories, `known_hosts`, `~/.ssh/config`, `/etc/hosts` | 9 | 9 | September 15–20 |
 | Search the whole disk for `.env` files and print them | 1 | 1 | June 23 |
 | Open one of the lures directly (`.env`, `.notes`, …) | 0 | 0 | — |
@@ -714,7 +714,6 @@ echo 'debian' | sudo -S -p '' su - -c 'bash -c '\''
   cat /etc/hosts 2>/dev/null
 } | tail -n 20000
 '\''' 2>/dev/null
-exit
 ```
 
 It does not want documents: it wants to know **which other machines this one talks to**. Histories, `known_hosts`, and SSH config are a map of the next hops. And it got exactly that — my planted history, `ssh deploy@prod-db-01.internal` included. Nobody came back to follow the lead, though: the collection is automated, and the exploitation, if any, happens elsewhere.
@@ -723,9 +722,9 @@ Note that none of this needs a network: the stolen data leaves through the SSH s
 
 ### Direct binary transfers
 
-19 sessions, from 18 IPs, push an **ELF directly through the terminal stream**, without `wget` or `curl`. You can see the `\x7fELF` header appear raw in the recording. The largest session in the corpus is **47 MB** on its own.
+19 connections, from 18 IPs, push an **ELF directly through the terminal stream**, without `wget` or `curl`. You can see the `\x7fELF` header appear raw in the recording. The largest recording in the corpus is **47 MB** on its own.
 
-It is a clever adaptation: on a hardened machine with no `wget`, no `curl`, and egress filtering, the SSH channel itself is still open. One session uses the SCP protocol (`scp -t /usr/.work/`); the rest go straight through.
+It is a clever adaptation: on a hardened machine with no `wget`, no `curl`, and egress filtering, the SSH channel itself is still open. One connection uses the SCP protocol (`scp -t /usr/.work/`); the rest go straight through.
 
 > [!WARNING]
 > Blocking `wget` and `curl` is not enough to prevent payload delivery. The administration channel is also a transfer channel.
@@ -741,27 +740,26 @@ gantt
     axisFormat %d/%m
 
     section Outlaw / Dota
-    mdrfckr key — 675 sessions, 332 IPs     :active, 2026-05-21, 2026-09-21
-    chattr/lockr recon — 687 sessions       :active, 2026-05-21, 2026-09-21
+    mdrfckr key — 675 conn., 332 IPs        :active, 2026-05-21, 2026-09-21
+    chattr/lockr recon — 687 conn.          :active, 2026-05-21, 2026-09-21
 
     section Victim lockout
-    root password change — 1262 sessions    :active, 2026-05-01, 2026-09-21
+    root password change — 635 conn.        :active, 2026-05-01, 2026-09-21
 
     section Droppers
-    kswpad (BillGates) — 40 sessions, 1 IP  :2026-05-13, 2026-09-16
-    /linux dropper — 17 sessions, 16 IPs    :2026-05-05, 2026-09-14
-    Direct ELF upload — 19 sessions         :2026-05-05, 2026-09-14
-    multics.x64 — 1 session                 :2026-05-01, 2026-05-02
-    fakepika (Diicot) — 2 sessions          :2026-06-17, 2026-06-18
+    kswpad (BillGates) — 10 conn., 1 IP     :2026-05-13, 2026-09-16
+    /linux dropper — 17 conn., 16 IPs       :2026-05-05, 2026-09-14
+    Direct ELF upload — 19 conn.            :2026-05-05, 2026-09-14
+    fakepika (Diicot) — 2 conn.             :2026-06-17, 2026-06-18
 
     section September wave
-    zed + perl — 5 sessions                 :crit, 2026-09-15, 2026-09-20
-    bo.sh — 5 sessions                      :crit, 2026-09-16, 2026-09-19
+    zed + perl — 5 conn.                    :crit, 2026-09-15, 2026-09-20
+    bo.sh — 5 conn.                         :crit, 2026-09-16, 2026-09-19
 ```
 
 **Outlaw is permanent.** From 21 May to 21 September without interruption, 332 distinct IPs, always the same key and the same recon block. It is the constant background of the internet.
 
-**`kswpad`: 40 sessions, a single IP.** One persistent operator who kept coming back for four months. Because the honeypot preserves their qcow2 overlay, they found "their" machine again on every visit. URLhaus identifies two of the family's binaries as **BillGates** (a.k.a. Elknot), a long-running Linux DDoS bot: this operator was after bandwidth, not CPU.
+**`kswpad`: 10 connections, a single IP.** One persistent operator who kept coming back for four months. Because the honeypot preserves their qcow2 overlay, they found "their" machine again on every visit. URLhaus identifies two of the family's binaries as **BillGates** (a.k.a. Elknot), a long-running Linux DDoS bot: this operator was after bandwidth, not CPU.
 
 **The September wave.** The `zed`+`perl` and `bo.sh` campaigns only appear at the very end of the window (15–20 September), each from 5 distinct IPs. The style is Outlaw — the `zed` payload is a Perl IRC bot script — but with new infrastructure and a cleaner delivery method.
 
@@ -821,7 +819,7 @@ The same URL pattern across 15 different hosts, mostly Alibaba Cloud addresses:
 | `120.26.141.203` | 🇨🇳 China | `http://120.26.141.203:8808/linux` |
 | `59.110.9.189` | 🇨🇳 China | `http://59.110.9.189:9684/linux` |
 
-Each host uses a different high port. The infrastructure is disposable: each IP serves only a handful of sessions before being replaced.
+Each host uses a different high port. The infrastructure is disposable: each IP serves only a handful of connections before being replaced.
 
 URLhaus confirms the "one binary" part: the same file (SHA-256 `a505de0a…`) was collected from 7 of these hosts. Two of the family's hosts are tagged **P2Pinfect**, a Rust worm that spreads over Redis and SSH and ships a miner — a likely, but indirect, identification.
 
@@ -899,10 +897,10 @@ Three French hosts distribute the `kswpad` family. A useful reminder: malicious 
 **On what attackers actually do.**
 
 1. **Password brute-forcing was the only vector observed.** Zero vulnerability exploitation across 530,860 attempts. SSH's real attack surface is not the protocol, it is your passwords.
-2. **The overwhelming majority of access is not exploited immediately.** 12,864 sessions end with `exit` and nothing else. The market is segmented: some validate credentials, others buy and exploit them.
-3. **The goal is almost always resource theft.** The recon block is entirely focused on CPU, RAM, and disk. Data hunting exists but is marginal — 41 sessions — and it targets credentials and pivots (password hashes, histories, `known_hosts`) more than content. That rarity is partly a bias of this setup: see [Blind spots](#blind-spots).
-4. **Competition between botnets is fierce.** `pkill`, `iptables -F`, deleting rival files, changing the root password to lock everyone else out.
-5. **Anti-forensics is essentially nonexistent.** 0.15% of sessions cover their tracks. Your logs hold the truth, if you read them.
+2. **Much of the access is not exploited immediately.** 40% of successful logins run no command at all. The market is segmented: some validate credentials, others buy and exploit them.
+3. **The goal is almost always resource theft.** The recon block is entirely focused on CPU, RAM, and disk. Data hunting exists but is marginal — 29 connections — and it targets credentials and pivots (password hashes, histories, `known_hosts`) more than content. That rarity is partly a bias of this setup: see [Blind spots](#blind-spots).
+4. **Competition between botnets is fierce.** `pkill`, wiping `/etc/hosts.deny`, deleting rival files, changing the root password to lock everyone else out.
+5. **Anti-forensics is essentially nonexistent.** 2.6% of connections that run commands cover their tracks. Your logs hold the truth, if you read them.
 
 **On what to do about it.**
 
@@ -940,6 +938,7 @@ The architecture that makes this honeypot safe also shapes what it can see. Four
 ## Methodology and ethics
 
 - **Data**: the honeypot's SQLite database, 2026-04-28 to 2026-09-21. Commands were reconstructed from the input (`"i"`) streams of the asciinema v2 recordings, not from shell history — so nothing escapes via `history -c`.
+- **Connections**: the database stores one row per SSH channel ("session"), with no connection identifier. Connections were reconstructed by attaching each session to the preceding successful login from the same IP. Per-connection figures use the same data snapshot as the authentication figures (21 September, 11:35 UTC) and reproduce its totals exactly: 1,656 successful logins, 12,939 sessions. Sessions are attached to the most recent successful login from the same IP. When several logins share the same second, their sessions cannot be split: this concerns 5 cases, chiefly one IP that opened 32 connections within one second on 11 June and ran 79 commands in 4 seconds. Each case counts as one connection; the repeated commands suggest that 4 to 6 of those 32 actually ran something, so connection counts may be low by a handful.
 - **Geolocation**: MaxMind GeoLite2-Country database, queried **locally**. No IP address was sent to any third-party service.
 - **Payloads**: no binary or script was downloaded, dynamically analyzed, or executed. The microVM has no network interface; every download attempt failed at the socket layer. The published URLs come exclusively from reading keystrokes. On 2026-10-03, the URLs and distribution hosts were looked up in the abuse.ch databases (URLhaus, ThreatFox, MalwareBazaar); this is the only data sent to a third party, and it consists of indicators already published here.
 - **Privacy**: the IP addresses published are those of machines that actively attacked a third-party system, and those of malware distribution infrastructure. They are released as indicators of compromise.

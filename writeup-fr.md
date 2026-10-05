@@ -227,9 +227,60 @@ Côté horaire, la distribution est remarquablement plate : entre 26 et 79 conne
 C'est le résultat le plus net de toute l'étude, et il mérite d'être énoncé seul :
 
 > [!NOTE]
-> **Sur 530 860 tentatives d'authentification, le nombre de tentatives par clé publique est de zéro. Absolument toutes les attaques observées sont du bruteforce de mot de passe.**
+> **Sur 530 860 tentatives d'authentification, pas une seule n'a cherché à *deviner* une clé publique.** 558 tentatives par clé publique ont bien eu lieu, depuis 31 adresses IP — mais elles rejouent toujours les **5 mêmes clés**. Du bourrage d'identifiants, pas du cassage de cryptographie.
 
 Pas une seule tentative d'exploitation de vulnérabilité dans le protocole SSH. Pas une tentative de downgrade d'algorithme. Pas de Terrapin, pas de `regreSSHion` (CVE-2024-6387), rien. Ce que fait Internet, 3 600 fois par jour, c'est essayer `root` / `123456`.
+
+### Les clés publiques : du bourrage de clés connues, pas du devinage
+
+Une version antérieure de ce write-up annonçait « zéro tentative par clé publique ». C'était faux, et l'erreur venait de la méthode : le honeypot rejette l'authentification par clé en amont, avant d'écrire la moindre ligne en base. Ces événements n'existaient que dans `journald`, et j'avais interrogé uniquement SQLite. Correction faite après qu'un lecteur a demandé si personne n'essayait les clés faibles de Debian 2008 — la question était la bonne.
+
+Les chiffres réels, sur la même fenêtre, en excluant les adresses depuis lesquelles j'ai moi-même testé le dispositif :
+
+| | |
+|---|---:|
+| Tentatives par clé publique | **558** |
+| IP distinctes | **31** |
+| Clés distinctes proposées | **5** |
+
+Le rapport entre ces trois nombres est tout le résultat. **558 tentatives pour 5 clés** : personne ne déroule un espace de clés. Si quelqu'un essayait le keyspace Debian de CVE-2008-0166 (~32 768 clés par type et par taille), on verrait des milliers d'empreintes distinctes. On en voit cinq, rejouées en boucle.
+
+| Empreinte SHA256 | Tentatives | IP | Période | Comptes visés |
+|---|---:|---:|---|---|
+| `9prMbqhS4QteoFQ1ZRJDqSBLWoHXPyKB0iWR05Ghro4` | 299 | **26** | 29/04 → 16/09 | `root` |
+| `1M4RzhMyWuFS/86uPY/ce2prh/dVTHW7iD2RhpquOZA` | 220 | 2 | 29/04 → 12/08 | `root` |
+| `YKCFpn6LcgP4JaK0DVVneI6T+AW9y2a2QwLT6IZ/nJ0` | 32 | 1 | 20/09 → 21/09 | `root`, `redis`, `web3`, `wallet`, `solana`, `deploy`, `git` |
+| `ZwhXWs2Dwz/NU3x+Odj8oIMDLXnUScGxsob18pR2Q6I` | 4 | 1 | 20/09 | `root`, `web3`, `wallet`, `solana` |
+| `78gkKoLYeUW62etRipAiAw2jImcwCMnvC5BO9+3mOtY` | 3 | 3 | 18/07 → 18/08 | `root`, `pi` |
+
+Les adresses, par clé, comme indicateurs de compromission :
+
+| Empreinte | IP sources |
+|---|---|
+| `9prMbqhS…` | `2.194.71.234`, `39.37.239.119`, `39.38.202.85`, `39.46.192.49`, `39.62.100.57`, `45.148.10.121`, `72.211.57.167`, `82.215.3.87`, `83.191.187.184`, `116.48.55.250`, `119.195.48.94`, `121.142.248.21`, `122.161.44.155`, `125.143.65.83`, `128.185.208.42`, `142.185.171.2`, `169.210.8.35`, `186.94.126.102`, `187.9.247.58`, `193.114.157.52`, `194.164.167.26`, `195.178.110.137`, `203.221.55.133`, `211.194.231.75`, `211.216.125.57`, `216.185.219.201` |
+| `1M4RzhMy…` | `45.148.10.121`, `195.178.110.137` |
+| `YKCFpn6L…` | `154.70.152.215` |
+| `ZwhXWs2D…` | `164.90.202.72` |
+| `78gkKoLY…` | `45.148.10.68`, `77.90.185.20`, `130.12.180.51` |
+
+Deux recoupements méritent d'être relevés. `45.148.10.121` et `195.178.110.137` présentent **deux clés différentes** chacune, et ce sont les deux seules IP de la clé `1M4RzhMy…` — même opérateur, deux jeux d'identifiants. Et `154.70.152.215` est l'adresse immédiatement voisine de `154.70.152.216`, l'hôte qui distribue le payload `zed` [vu plus loin](#les-payloads-et-leurs-urls) : même /24, donc très probablement la même infrastructure.
+
+La première ligne est la plus parlante : **une même clé présentée depuis 26 adresses IP différentes, pendant cinq mois.** Une seule clé, distribuée à toute une flotte.
+
+Reste à savoir ce que ces attaquants croient faire. Deux lectures sont possibles : soit ils revérifient une porte dérobée qu'ils ont eux-mêmes posée, soit ils essaient des clés déjà connues d'eux — volées, fuitées, ou codées en dur par un constructeur — en espérant tomber sur une machine qui les accepte. Les données tranchent.
+
+D'abord une précision qui vaut pour les 558 : **aucune n'avait la moindre chance d'aboutir.** Le honeypot refuse catégoriquement l'authentification par clé, quelle que soit la clé présentée — le taux de succès par clé publique n'est pas faible, il est structurellement nul. Ce qui suit ne parle donc que de ce que les attaquants ont *tenté*.
+
+Le départage vient d'ailleurs : **sur les 31 IP ayant présenté une clé, 22 n'ont jamais tenté le moindre mot de passe, et 2 seulement sont parvenues à ouvrir un shell — par mot de passe, forcément.** On ne revérifie pas une porte dérobée sur une machine qu'on n'a jamais compromise. L'immense majorité de ces tentatives vise donc un hôte où ces attaquants n'ont jamais rien installé, et n'auraient donc jamais pu déposer la clé qu'ils présentent.
+
+C'est donc bien une attaque par clé — mais pas celle à laquelle on pense. Ce n'est pas du *devinage* de clé, c'est du **bourrage de clés connues** : un petit jeu fixe d'identifiants publics rejoué partout, exactement comme on rejoue `root`/`123456`. La différence avec le bruteforce de mot de passe n'est pas la méthode, c'est la taille du dictionnaire — cinq entrées au lieu de 77 173.
+
+Deux exceptions confirment la lecture : `78gkKoLY…` est la seule clé présentée par les deux IP qui ont réellement compromis le honeypot par mot de passe. Pour celle-là, et pour elle seule, l'hypothèse de la vérification d'accès déjà en place est plausible.
+
+Les deux clés du 20-21 septembre complètent le tableau : elles visent `redis`, `web3`, `wallet`, `solana`, soit exactement les comptes du même acteur crypto-ciblé repéré sur la bannière `OpenSSH_8.0`. Un opérateur qui essaie ses clés sur des comptes précis plutôt que de ratisser.
+
+> [!NOTE]
+> **D'où viennent ces 5 clés ? Je ne peux pas le dire, et c'est la vraie limite.** Le honeypot ne journalise que l'empreinte SHA256, pas le matériel de la clé — or une empreinte est un hachage à sens unique. Impossible donc de vérifier si ce sont des clés faibles de Debian, des clés constructeur extraites d'un firmware, ou des clés privées ramassées dans un dépôt Git public. Aucun service de lookup ne comble ce trou : [badkeys](https://badkeys.info/), le seul outil qui détecte CVE-2008-0166, indexe sur le modulus RSA et exige la clé complète ; VirusTotal n'indexe pas les clés SSH ; Shodan, Censys et [Passive SSH](https://github.com/D4-project/passive-ssh) acceptent bien une empreinte en entrée, mais indexent les clés **hôte**, pas les clés d'authentification client. Capturer la clé entière est la correction à apporter au honeypot, et elle rendrait toutes ces vérifications possibles.
 
 Autre point : le honeypot écoute sur le **port 2222**, pas sur le 22. Vérification faite dans les logs de démarrage, il n'a jamais été sur autre chose, et il n'y a aucune redirection NAT.
 
@@ -976,7 +1027,7 @@ Chaque payload identifié est soit un **mineur** (XMRig, installé par Diicot ou
 
 **Sur ce que font vraiment les attaquants.**
 
-1. **Le bruteforce de mot de passe est le seul vecteur observé.** Zéro exploitation de vulnérabilité en 530 860 tentatives. La surface d'attaque réelle de SSH, ce n'est pas le protocole, ce sont vos mots de passe.
+1. **Le bruteforce de mot de passe est le seul vecteur d'entrée observé.** Zéro exploitation de vulnérabilité en 530 860 tentatives, et aucune tentative de *deviner* une clé publique. La surface d'attaque réelle de SSH, ce n'est pas le protocole, ce sont vos mots de passe.
 2. **Une grande partie des accès n'est pas exploitée immédiatement.** 40 % des connexions réussies n'exécutent aucune commande. Le marché est segmenté : certains valident des identifiants, d'autres les achètent et les exploitent.
 3. **Le but est presque toujours le vol de ressources.** Le bloc de recon est entièrement centré sur CPU, RAM et disque. La chasse aux données existe mais reste marginale — 29 connexions — et vise les identifiants et les rebonds (hash de mot de passe, historiques, `known_hosts`) plus que le contenu. Cette rareté est en partie un biais du dispositif : voir [Angles morts](#angles-morts).
 4. **La concurrence entre botnets est féroce.** `pkill`, vidage de `/etc/hosts.deny`, suppression des fichiers rivaux, changement du mot de passe root pour verrouiller les autres dehors.
@@ -1003,13 +1054,15 @@ Et la persistance par attaquant, via les overlays qcow2, est ce qui donne à ces
 
 ## Angles morts
 
-L'architecture qui rend ce honeypot sûr conditionne aussi ce qu'il peut voir. Quatre biais méritent d'être dits clairement.
+L'architecture qui rend ce honeypot sûr conditionne aussi ce qu'il peut voir. Cinq biais méritent d'être dits clairement.
 
 **Le mot de passe est lié à l'IP.** Dans un marché à deux étages, un bot valide l'identifiant et un autre acteur, depuis une autre IP, l'utilise. Ici, ce second acteur se voit attribuer un autre mot de passe (neuf chances sur dix que l'identifiant acheté échoue), et même s'il entre, il tombe sur une VM vierge, sans les modifications du premier. Je capture donc bien mieux le premier maillon de la chaîne que le second — et c'est le second qui irait le plus probablement chercher des données.
 
 **Pas de réseau, pas de second étage.** La chasse aux secrets (clés cloud, fichiers `.env`, wallets) passe souvent par des scripts téléchargés en second étage. Ces téléchargements échouent ici, donc cette étape ne s'exécute jamais. Le même choix fait que j'ai les URLs des payloads, pas les binaires : ce qu'ils font réellement n'est connu que par des bacs à sable tiers — voir [Suivre les payloads](#suivre-les-payloads).
 
 **La VM n'a aucune valeur apparente.** 256 Mo de RAM, un disque minuscule, aucun service qui tourne vraiment. Le bloc de recon automatique la juge sans intérêt et passe son chemin avant qu'un humain ne s'y intéresse.
+
+**L'authentification par clé est désactivée.** Le honeypot refuse toute clé publique. Je vois donc qui en présente une, mais pas ce qui se serait passé si le serveur en avait accepté : un attaquant qui mène par la clé bascule immédiatement sur le mot de passe. Et le serveur ne journalise que l'empreinte, pas la clé, ce qui interdit toute comparaison avec les corpus de clés compromises connues.
 
 **Le port 2222 n'est pas exotique.** Savoir si les scanners essaient vraiment tous les ports, ou seulement le 22 et les alternatives habituelles, dépasse ce dispositif. Pour y répondre, il faut un autre capteur : écouter sur de nombreux ports — voire tous — et journaliser chaque connexion, chaque port touché et chaque sonde envoyée par les scanners pour identifier le service. C'est un projet à part entière.
 

@@ -227,9 +227,61 @@ By hour of day, the distribution is remarkably flat: between 26 and 79 connectio
 This is the single clearest result of the whole study, and it deserves to stand alone:
 
 > [!NOTE]
-> **Across 530,860 authentication attempts, the number of public-key attempts is zero. Every single attack observed was password brute-forcing.**
+> **Across 530,860 authentication attempts, not one tried to *guess* a public key.** There were 558 public-key attempts, from 31 IP addresses — but they replay the same **5 keys** throughout. Credential stuffing, not broken cryptography.
 
 Not one attempt to exploit a vulnerability in the SSH protocol. No algorithm downgrade attempt. No Terrapin, no `regreSSHion` (CVE-2024-6387), nothing. What the internet does, 3,600 times a day, is try `root` / `123456`.
+
+### Public keys: known-key stuffing, not key guessing
+
+An earlier version of this write-up claimed "zero public-key attempts". That was wrong, and the error was methodological: the honeypot rejects key authentication upstream, before writing anything to the database. Those events existed only in `journald`, and I had queried SQLite alone. Corrected after a reader asked whether nobody was trying the 2008 Debian weak keys — it was the right question to ask.
+
+The real figures, over the same window, excluding the addresses I used to test the setup myself:
+
+| | |
+|---|---:|
+| Public-key attempts | **558** |
+| Distinct IPs | **31** |
+| Distinct keys offered | **5** |
+
+The ratio between those three numbers is the entire finding. **558 attempts for 5 keys**: nobody is walking a keyspace. If someone were trying the Debian keyspace from CVE-2008-0166 (~32,768 keys per type and size), we would see thousands of distinct fingerprints. We see five, replayed in a loop.
+
+| SHA256 fingerprint | Attempts | IPs | Window | Accounts targeted |
+|---|---:|---:|---|---|
+| `9prMbqhS4QteoFQ1ZRJDqSBLWoHXPyKB0iWR05Ghro4` | 299 | **26** | 29 Apr → 16 Sep | `root` |
+| `1M4RzhMyWuFS/86uPY/ce2prh/dVTHW7iD2RhpquOZA` | 220 | 2 | 29 Apr → 12 Aug | `root` |
+| `YKCFpn6LcgP4JaK0DVVneI6T+AW9y2a2QwLT6IZ/nJ0` | 32 | 1 | 20 Sep → 21 Sep | `root`, `redis`, `web3`, `wallet`, `solana`, `deploy`, `git` |
+| `ZwhXWs2Dwz/NU3x+Odj8oIMDLXnUScGxsob18pR2Q6I` | 4 | 1 | 20 Sep | `root`, `web3`, `wallet`, `solana` |
+| `78gkKoLYeUW62etRipAiAw2jImcwCMnvC5BO9+3mOtY` | 3 | 3 | 18 Jul → 18 Aug | `root`, `pi` |
+
+The addresses, per key, as indicators of compromise:
+
+| Fingerprint | Source IPs |
+|---|---|
+| `9prMbqhS…` | `2.194.71.234`, `39.37.239.119`, `39.38.202.85`, `39.46.192.49`, `39.62.100.57`, `45.148.10.121`, `72.211.57.167`, `82.215.3.87`, `83.191.187.184`, `116.48.55.250`, `119.195.48.94`, `121.142.248.21`, `122.161.44.155`, `125.143.65.83`, `128.185.208.42`, `142.185.171.2`, `169.210.8.35`, `186.94.126.102`, `187.9.247.58`, `193.114.157.52`, `194.164.167.26`, `195.178.110.137`, `203.221.55.133`, `211.194.231.75`, `211.216.125.57`, `216.185.219.201` |
+| `1M4RzhMy…` | `45.148.10.121`, `195.178.110.137` |
+| `YKCFpn6L…` | `154.70.152.215` |
+| `ZwhXWs2D…` | `164.90.202.72` |
+| `78gkKoLY…` | `45.148.10.68`, `77.90.185.20`, `130.12.180.51` |
+
+Two overlaps are worth noting. `45.148.10.121` and `195.178.110.137` each present **two different keys**, and they are the only two IPs behind `1M4RzhMy…` — same operator, two credential sets. And `154.70.152.215` sits immediately next to `154.70.152.216`, the host distributing the `zed` payload [seen below](#payloads-and-their-urls): same /24, so almost certainly the same infrastructure.
+
+The first row is the telling one: **the same key presented from 26 different IP addresses, over five months.** One key, distributed across a whole fleet.
+
+What those attackers believe they are doing is the open question. Two readings are possible: either they are re-checking a backdoor they planted themselves, or they are trying keys they already hold — stolen, leaked, or hardcoded by a vendor — hoping to hit a machine that accepts them. The data settles it.
+
+First, a clarification that covers all 558: **none of them had any chance of succeeding.** The honeypot categorically refuses key authentication, whatever key is offered — the public-key success rate is not low, it is structurally zero. What follows is only about what attackers *attempted*.
+
+The discriminator lies elsewhere: **of the 31 IPs that presented a key, 22 never tried a single password, and only 2 ever managed to open a shell — by password, necessarily.** You do not re-check a backdoor on a machine you never breached. The overwhelming majority of these attempts target a host where those attackers never installed anything, and so could never have planted the key they are presenting.
+
+So it is a key-based attack — just not the one that comes to mind. This is not key *guessing*, it is **known-key stuffing**: a small fixed set of public credentials replayed everywhere, exactly as `root`/`123456` is replayed. The difference from password brute-forcing is not the method, it is the dictionary size — five entries instead of 77,173.
+
+Two exceptions support the reading: `78gkKoLY…` is the only key presented by the two IPs that actually compromised the honeypot by password. For that one, and only that one, the "verifying existing access" hypothesis is plausible.
+
+The two keys from 20–21 September complete the picture: they target `redis`, `web3`, `wallet`, `solana` — exactly the accounts of the same crypto-focused actor spotted on the `OpenSSH_8.0` banner. An operator trying their keys against specific accounts rather than sweeping.
+
+> [!NOTE]
+> **Where do these 5 keys come from? I cannot say, and that is the real limitation.** The honeypot logs only the SHA256 fingerprint, not the key material — and a fingerprint is a one-way hash. So there is no way to check whether these are Debian weak keys, vendor keys pulled from a firmware image, or private keys scraped from a public Git repository. No lookup service fills that gap: [badkeys](https://badkeys.info/), the one tool that detects CVE-2008-0166, indexes on the RSA modulus and requires the full key; VirusTotal does not index SSH keys; Shodan, Censys and [Passive SSH](https://github.com/D4-project/passive-ssh) do accept a fingerprint as input, but they index **host** keys, not client authentication keys. Capturing the full key is the fix to make to the honeypot, and it would make every one of those checks possible.
+
 
 One more point: the honeypot listens on **port 2222**, not 22. I checked the startup logs — it has never been on anything else, and there is no NAT redirection.
 
@@ -976,7 +1028,7 @@ Every identified payload is either a **miner** (XMRig, installed by Diicot or th
 
 **On what attackers actually do.**
 
-1. **Password brute-forcing was the only vector observed.** Zero vulnerability exploitation across 530,860 attempts. SSH's real attack surface is not the protocol, it is your passwords.
+1. **Password brute-forcing was the only access vector observed.** Zero vulnerability exploitation across 530,860 attempts, and no attempt to *guess* a public key. SSH's real attack surface is not the protocol, it is your passwords.
 2. **Much of the access is not exploited immediately.** 40% of successful logins run no command at all. The market is segmented: some validate credentials, others buy and exploit them.
 3. **The goal is almost always resource theft.** The recon block is entirely focused on CPU, RAM, and disk. Data hunting exists but is marginal — 29 connections — and it targets credentials and pivots (password hashes, histories, `known_hosts`) more than content. That rarity is partly a bias of this setup: see [Blind spots](#blind-spots).
 4. **Competition between botnets is fierce.** `pkill`, wiping `/etc/hosts.deny`, deleting rival files, changing the root password to lock everyone else out.
@@ -1003,13 +1055,15 @@ And per-attacker persistence via qcow2 overlays is what gives this data its dept
 
 ## Blind spots
 
-The architecture that makes this honeypot safe also shapes what it can see. Four biases are worth stating plainly.
+The architecture that makes this honeypot safe also shapes what it can see. Five biases are worth stating plainly.
 
 **The password is tied to the IP.** In a two-tier market, one bot validates the credential and another actor, from another IP, uses it. Here that second actor gets a different assigned password (nine chances in ten that the purchased credential fails), and even if they get in, they land on a fresh VM without the first actor's changes. I therefore capture the first link of the chain far better than the second — and the second is the one most likely to go after data.
 
 **No network, no second stage.** Secret hunting (cloud keys, `.env` files, wallets) is often done by scripts downloaded in a second stage. Those downloads fail here, so that stage never runs. The same choice means I have the payload URLs, not the binaries: what they actually do is only known from third-party sandboxes — see [Following the payloads](#following-the-payloads).
 
 **The VM looks worthless.** 256 MB of RAM, a tiny disk, no service actually running. The automated recon block rates it as poor and moves on before a human ever looks.
+
+**Key authentication is disabled.** The honeypot refuses every public key. So I can see who offers one, but not what would have happened had the server accepted keys: an attacker who leads with a key falls straight back to passwords. And the server logs only the fingerprint, not the key, which rules out any comparison against known compromised-key corpora.
 
 **Port 2222 is not exotic.** Whether scanners really try every port, or only 22 and the usual alternatives, is beyond the reach of this setup. Answering it calls for a different sensor: listening on many ports — or all of them — and logging every connection, every port touched, and every probe scanners send to identify the service. That is a project of its own.
 
